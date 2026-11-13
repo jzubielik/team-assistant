@@ -1,0 +1,137 @@
+"""config/agent.toml is read strictly: a wrong or misspelled setting stops the agent."""
+
+from __future__ import annotations
+
+import pytest
+
+from team_assistant.config import NAMESPACES, AgentConfig, RetrievalSetting, load_config
+
+VALID = 'model_id = "m"\nmax_output_tokens = 100\n[memory]\nevent_expiry_days = 30\n'
+RETRIEVAL = "[memory.retrieval.preferences]\ntop_k = 5\nrelevance_score = 0.2\n"
+
+
+def write(tmp_path, text):
+    path = tmp_path / "agent.toml"
+    path.write_text(text)
+    return path
+
+
+def test_repository_config_loads():
+    config = load_config()
+    assert config == AgentConfig(
+        model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        max_output_tokens=4000,
+        event_expiry_days=30,
+        retrieval={
+            "/preferences/{actorId}/": RetrievalSetting(top_k=5, relevance_score=0.2),
+            "/facts/{actorId}/": RetrievalSetting(top_k=5, relevance_score=0.4),
+        },
+    )
+
+
+def test_namespaces_start_and_end_with_a_slash():
+    # Retrieval matches a prefix: without the trailing slash, /preferences/abc would also
+    # match /preferences/abcd... (AgentCore devguide, "Memory organization").
+    assert all(t.startswith("/") and t.endswith("/") for t in NAMESPACES.values())
+
+
+def test_retrieval_is_keyed_by_the_strategys_namespace(tmp_path):
+    config = load_config(write(tmp_path, VALID + RETRIEVAL))
+    assert config.retrieval == {"/preferences/{actorId}/": RetrievalSetting(5, 0.2)}
+
+
+def test_no_retrieval_block_means_no_retrieval(tmp_path):
+    assert load_config(write(tmp_path, VALID)).retrieval == {}
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (RETRIEVAL.replace(".preferences", ".prefs"), "memory.retrieval.prefs"),
+        (RETRIEVAL.replace(".preferences", ".summaries"), "summaries are not retrieved"),
+        (RETRIEVAL.replace("= 5", "= 0"), "top_k"),
+        (RETRIEVAL.replace("= 5", "= 1001"), "top_k"),
+        (RETRIEVAL.replace("= 5", "= 5.0"), "top_k"),
+        (RETRIEVAL.replace("= 0.2", "= 1.5"), "relevance_score"),
+        (RETRIEVAL.replace("= 0.2", "= -0.1"), "relevance_score"),
+        (RETRIEVAL.replace("= 0.2", '= "0.2"'), "relevance_score"),
+        (RETRIEVAL.replace("top_k = 5\n", ""), "top_k"),
+        (RETRIEVAL + "topk = 3\n", "memory.retrieval.preferences.topk"),
+    ],
+)
+def test_wrong_retrieval_settings_are_refused(tmp_path, text, message):
+    with pytest.raises(ValueError, match=message):
+        load_config(write(tmp_path, VALID + text))
+
+
+def test_values_are_read(tmp_path):
+    assert load_config(write(tmp_path, VALID)) == AgentConfig("m", 100, 30)
+
+
+def test_tracing_is_off_unless_switched_on(tmp_path):
+    assert load_config(write(tmp_path, VALID)).tracing is False
+    assert load_config().tracing is False  # the repository's setting
+    assert load_config(write(tmp_path, VALID + "[tracing]\nenabled = true\n")).tracing is True
+    assert load_config(write(tmp_path, VALID + "[tracing]\nenabled = false\n")).tracing is False
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('[tracing]\nenabled = "yes"\n', "tracing.enabled must be true or false"),
+        ("[tracing]\nenabled = 1\n", "tracing.enabled must be true or false"),
+        ("[tracing]\n", "tracing.enabled must be true or false"),
+        ("[tracing]\nenabled = true\nsampling = 1\n", "unknown key.*tracing.sampling"),
+    ],
+)
+def test_wrong_tracing_settings_are_refused(tmp_path, text, message):
+    with pytest.raises(ValueError, match=message):
+        load_config(write(tmp_path, VALID + text))
+
+
+@pytest.mark.parametrize("days", [7, 365])
+def test_expiry_limits_are_accepted(tmp_path, days):
+    text = VALID.replace("= 30", f"= {days}")
+    assert load_config(write(tmp_path, text)).event_expiry_days == days
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (VALID.replace("= 30", "= 6"), "event_expiry_days"),
+        (VALID.replace("= 30", "= 366"), "event_expiry_days"),
+        (VALID.replace("= 30", '= "30"'), "event_expiry_days"),
+        (VALID.replace("event_expiry_days = 30", ""), "event_expiry_days"),
+        (VALID + "event_expiry = 5\n", "memory.event_expiry"),
+        ("modelid = 1\n" + VALID, "modelid"),
+        (VALID.replace('"m"', '""'), "model_id"),
+        (VALID.replace("= 100", "= 0"), "max_output_tokens"),
+        (VALID.replace("= 100", "= true"), "max_output_tokens"),
+    ],
+)
+def test_wrong_settings_are_refused(tmp_path, text, message):
+    with pytest.raises(ValueError, match=message):
+        load_config(write(tmp_path, text))
+
+
+def test_the_return_url_follows_the_client_and_never_the_request():
+    from team_assistant.config import return_url
+
+    assert return_url(None, None) == "http://localhost:8977/github/callback"
+    assert return_url("cli", "https://d.example") == "http://localhost:8977/github/callback"
+    assert return_url("web-local", None) == "http://localhost:5173/callback.html"
+    assert (
+        return_url("web", "https://d111.cloudfront.net/")
+        == "https://d111.cloudfront.net/callback.html"
+    )
+
+
+@pytest.mark.parametrize(
+    ("client", "web_url"),
+    [("web", None), ("web", ""), ("https://evil.example", None), ("CLI", None), (["cli"], None)],
+)
+def test_an_unknown_client_or_a_missing_web_address_is_refused(client, web_url):
+    from team_assistant.config import return_url
+
+    with pytest.raises(ValueError, match="unknown client"):
+        return_url(client, web_url)
