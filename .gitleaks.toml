@@ -1,0 +1,76 @@
+# gitleaks configuration, used by scripts/gitleaks.sh (git hooks, make leaks, CI).
+# The default ruleset (private keys, GitHub tokens, AWS keys, ...) plus project rules for
+# identifiers that are not secrets but must not be committed: AWS account ids, e-mail
+# addresses, IAM Identity Center ids and access portal URLs, and files that must never be
+# committed. Real values live in local.mk (gitignored).
+# Allowlists stay minimal: only placeholders that the docs and tests use on purpose.
+title = "team-assistant"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-account-id-arn"
+description = "AWS account id in an ARN"
+regex = '''arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:([0-9]{12}):'''
+secretGroup = 1
+keywords = ["arn:aws"]
+[[rules.allowlists]]
+description = "placeholders: one digit repeated, or 123456789012"
+regexTarget = "secret"
+regexes = ['''^(0{12}|1{12}|2{12}|3{12}|4{12}|5{12}|6{12}|7{12}|8{12}|9{12}|123456789012)$''']
+
+[[rules]]
+id = "aws-account-id"
+description = "Standalone 12-digit number (likely an AWS account id)"
+regex = '''(?:^|[^0-9A-Za-z_.-])([0-9]{12})(?:[^0-9A-Za-z_]|$)'''
+secretGroup = 1
+[[rules.allowlists]]
+description = "placeholders: one digit repeated, or 123456789012"
+regexTarget = "secret"
+regexes = ['''^(0{12}|1{12}|2{12}|3{12}|4{12}|5{12}|6{12}|7{12}|8{12}|9{12}|123456789012)$''']
+
+[[rules]]
+id = "email-address"
+description = "E-mail address"
+regex = '''[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}'''
+keywords = ["@"]
+[[rules.allowlists]]
+# Reserved example domains (and subdomains), GitHub noreply addresses, and user@github.com:
+# git@github.com and token@github.com in clone URLs are not mailboxes.
+regexTarget = "match"
+regexes = [
+  '''(?i)[@.]example\.(com|org)$''',
+  '''(?i)@(users\.noreply\.)?github\.com$''',
+]
+
+[[rules]]
+id = "identity-center-id"
+description = "IAM Identity Center store or instance id"
+regex = '''\b(d-[0-9a-f]{10}|ssoins-[0-9a-f]{16})\b'''
+keywords = ["d-", "ssoins-"]
+[[rules.allowlists]]
+description = "placeholders: zeros, or 1234567890..."
+regexTarget = "match"
+regexes = ['''^(d-0{10}|d-1234567890|ssoins-0{16}|ssoins-1234567890abcdef)$''']
+
+[[rules]]
+id = "aws-sso-start-url"
+description = "AWS access portal (SSO start) URL"
+regex = '''https://d-[0-9a-z]+\.awsapps\.com/start'''
+keywords = ["awsapps.com"]
+[[rules.allowlists]]
+description = "zero placeholder"
+regexTarget = "match"
+regexes = ['''^https://d-0{10}\.awsapps\.com/start$''']
+
+[[rules]]
+id = "forbidden-file"
+description = "File that must never be committed (local.mk, *.pem, .env*)"
+path = '''(^|/)(local\.mk|[^/]+\.pem|\.env[^/]*)$'''
+
+# Default rule generic-api-key: Bedrock model ids are not keys.
+[[allowlists]]
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^(global\.|us\.|eu\.)?anthropic\.claude-[a-z0-9.:-]+$''']

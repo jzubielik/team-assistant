@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Scan the staged changes for secrets and identifiers: gitleaks (.gitleaks.toml) and trufflehog;
+# lint staged workflows (actionlint, zizmor) and Dockerfiles (hadolint). Installed by make hooks.
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+status=0
+"$root/scripts/gitleaks.sh" staged || status=1
+"$root/scripts/scan.sh" staged || status=1
+exit "$status"

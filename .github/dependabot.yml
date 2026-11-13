@@ -1,0 +1,70 @@
+# Dependabot: weekly pull requests, minor and patch updates grouped per ecosystem, at most two
+# open per ecosystem. Commit prefixes keep the pull requests in Conventional Commits: ci for
+# actions, build for images and packages. A release is proposed only after a 7-day cooldown
+# (time for a bad or malicious release to be pulled).
+# Not covered: the tool versions in the ARG lines of docker/runner.Dockerfile (Node, AWS CLI,
+# Docker, buildx, shellcheck, gitleaks, trufflehog, actionlint, hadolint, zizmor, pip-audit),
+# the binfmt image in the Makefile and the build backend pin in pyproject.toml
+# (build-system.requires). Bump them by hand.
+version: 2
+updates:
+  # Actions pinned by SHA; Dependabot updates the SHA and the `# vX.Y.Z` comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: ci
+
+  # Every docker/*.Dockerfile: FROM lines in tag@sha256 form (new digest or tag).
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    groups:
+      images:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+    ignore:
+      # A new Python line is a deliberate change (requires-python): new digests and patch
+      # releases of 3.13 still come through.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # uv.lock of the agent (/) and of the CDK app (/infra).
+  - package-ecosystem: uv
+    directories: [/, /infra]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    groups:
+      python:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+
+  # The CDK CLI (aws-cdk) in infra/package.json.
+  - package-ecosystem: npm
+    directory: /infra
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    groups:
+      npm:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
