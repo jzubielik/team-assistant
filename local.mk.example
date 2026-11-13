@@ -1,0 +1,23 @@
+# Operator settings for make. Copy to local.mk (gitignored) and replace the placeholders:
+#   cp local.mk.example local.mk
+# The Makefile reads local.mk if present. A value on the make command line wins; the shell
+# environment is never used (an exported PROFILE or REGION is refused by the AWS targets, and
+# AWS_PROFILE and AWS_REGION are ignored).
+# ENV is not set here: pass it on every command line (make deploy ENV=dev).
+
+# Admin profile in ~/.aws/config and the deployment region (both required by the AWS targets).
+PROFILE = <admin-profile>
+REGION = <region>
+
+# Per environment: the expected AWS account. A target that deploys stops when the profile
+# points at another account. One line per environment.
+ACCOUNT_dev = <account-id>
+
+# Per environment: the client id of the environment's GitHub OAuth App (docs/runbook.md).
+# Not a secret (it appears in every consent URL), but it identifies your app, so it stays here.
+GITHUB_CLIENT_ID_dev = <github-oauth-app-client-id>
+
+# Per environment: the random end of the Cognito login domain (ta-<env>-<suffix>), so the login
+# address does not show the account id. Eight lowercase hexadecimal characters, made
+# once per environment and then kept: openssl rand -hex 4
+LOGIN_SUFFIX_dev = <eight-hex-characters>

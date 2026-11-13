@@ -1,0 +1,43 @@
+[project]
+name = "team-assistant"
+version = "0.1.0"
+description = "Reference Strands agent on Amazon Bedrock AgentCore with per-user memory"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "strands-agents",
+    "bedrock-agentcore",
+    "boto3",
+    # Exports the agent's spans on the Runtime (opentelemetry-instrument in the image's CMD).
+    # Exact version: it pins every OpenTelemetry package, and the settings that keep content
+    # out of spans were checked against this version's source.
+    "aws-opentelemetry-distro==0.22.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pyyaml", # also used by make bootstrap (scripts/bootstrap_template.py)
+    "ruff",
+]
+
+[build-system]
+# uv.lock does not cover build requirements, so the exact version is fixed here.
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/team_assistant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that need real AWS or network access (excluded in CI)",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+
+# Operator settings (copy local.mk.example)
+local.mk
+
+# CDK
+cdk.out/
+node_modules/
+
+# The page's settings for make web: written from a stack's outputs
+web/public/config.json
+
+# Reports of make measure: they hold conversation content and memory records
+measurements/
+
+.env
+.DS_Store

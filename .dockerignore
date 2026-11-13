@@ -1,0 +1,16 @@
+# Build context of docker/agent.Dockerfile: nothing but what the image copies. Everything else
+# (infra/, tests/, .git, local.mk, docs) stays out, so it cannot end up in the image and does
+# not change the image's hash.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!config/
+# CDK copies the context to a staging directory with these rules and builds there, so the
+# Dockerfile itself must be let in (plain docker build would send it anyway).
+!docker/
+docker/*
+!docker/agent.Dockerfile
+**/__pycache__/
+**/*.pyc
