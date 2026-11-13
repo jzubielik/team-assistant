@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# team-assistant-<env>-boundary (docs/adr/0001). Deployed by `make deploy` with the operator's
+# own credentials (aws cloudformation deploy, no --role-arn) before the cdk deploy of
+# TeamAssistant-<env>; removed by `make destroy` after it.
+# TeamAssistantCdkPermissionsBoundary-<env> is the permissions boundary of every IAM role of
+# that environment: the most a role of env <env> may ever do. A boundary grants nothing by
+# itself; a role can do only what both its own policy and the boundary allow.
+# The roles are the Runtime's and the gateway's. Every Allow is what the agent or the gateway
+# does at run time, scoped to this environment's Runtime and Memory by name (their ids are
+# <name>-<10 characters>).
+# Names: infra/team_assistant_infra/naming.py (Names.boundary_policy, Names.boundary_stack).
+Description: team-assistant permissions boundary of one environment
+
+Parameters:
+  Env:
+    Type: String
+    Description: Environment name (naming.py validate_env)
+    AllowedPattern: "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    MaxLength: 15
+  RuntimeName:
+    Type: String
+    Description: Name of the environment's Runtime (naming.py Names.runtime)
+    AllowedPattern: "^team_assistant_[a-z0-9_]+_runtime$"
+  MemoryName:
+    Type: String
+    Description: Name of the environment's Memory (naming.py Names.memory)
+    AllowedPattern: "^team_assistant_[a-z0-9_]+_memory$"
+
+Resources:
+  PermissionsBoundaryPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub TeamAssistantCdkPermissionsBoundary-${Env}
+      Description: !Sub Boundary for every IAM role of team-assistant env ${Env} (run-time needs only)
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RuntimeLogs
+            Effect: Allow
+            Action: [logs:CreateLogGroup, logs:DescribeLogStreams, logs:CreateLogStream, logs:PutLogEvents]
+            Resource:
+              - !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/${RuntimeName}-*
+              - !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/${RuntimeName}-*:log-stream:*
+          - Sid: SpanDelivery
+            # AgentCore lets X-Ray deliver the agent's spans to the agent's own log group.
+            Effect: Allow
+            Action: logs:PutResourcePolicy
+            Resource: !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/${RuntimeName}-*
+          - Sid: DescribeLogGroups
+            # Lists log group names; the action cannot be limited to one group.
+            Effect: Allow
+            Action: logs:DescribeLogGroups
+            Resource: !Sub arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*
+          - Sid: ImagePull
+            Effect: Allow
+            Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage]
+            Resource: !Sub arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/cdk-teamasst-container-assets-*
+          - Sid: ImagePullToken
+            Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: "*"
+          - Sid: Model
+            # Any Bedrock model: the role's own policy names the one from config/agent.toml.
+            Effect: Allow
+            Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/*
+              - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*
+          - Sid: ConversationEvents
+            Effect: Allow
+            Action: [bedrock-agentcore:CreateEvent, bedrock-agentcore:GetEvent, bedrock-agentcore:ListEvents,
+                     bedrock-agentcore:DeleteEvent, bedrock-agentcore:ListSessions]
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/${MemoryName}-*
+          - Sid: LongTermRecords
+            Effect: Allow
+            Action: bedrock-agentcore:RetrieveMemoryRecords
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/${MemoryName}-*
+          - Sid: WorkloadIdentityTokens
+            Effect: Allow
+            Action: [bedrock-agentcore:GetWorkloadAccessToken, bedrock-agentcore:GetWorkloadAccessTokenForJWT,
+                     bedrock-agentcore:GetWorkloadAccessTokenForUserId]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default/workload-identity/${RuntimeName}-*
+              # The gateway's own identity, for the token exchange.
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default/workload-identity/team-assistant-${Env}-gateway-*
+          - Sid: GithubTokens
+            # The agent gets a user's GitHub token and completes a user's consent. The
+            # gateway gets the token it sends to the Runtime from the exchange provider.
+            Effect: Allow
+            Action: [bedrock-agentcore:GetResourceOauth2Token, bedrock-agentcore:CompleteResourceTokenAuth]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:token-vault/default
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:token-vault/default/oauth2credentialprovider/team-assistant-${Env}-github
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:token-vault/default/oauth2credentialprovider/team-assistant-${Env}-exchange
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default/workload-identity/team-assistant-${Env}-gateway-*
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default/workload-identity/${RuntimeName}-*
+          - Sid: GithubClientSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              - !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:team-assistant/${Env}/github-*
+              # The placeholder secret of the gateway's token exchange provider.
+              - !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:team-assistant/${Env}/exchange-*
+          - Sid: GatewayInvoke
+            # The gateway's role relays accepted requests to this environment's Runtime.
+            Effect: Allow
+            Action: bedrock-agentcore:InvokeAgentRuntime
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:runtime/${RuntimeName}-*
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:runtime/${RuntimeName}-*/runtime-endpoint/*
+          - Sid: Traces
+            Effect: Allow
+            Action: [xray:PutTraceSegments, xray:PutTelemetryRecords, xray:GetSamplingRules, xray:GetSamplingTargets]
+            Resource: "*"
+          - Sid: Metrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: "*"
+            Condition:
+              StringEquals:
+                cloudwatch:namespace: bedrock-agentcore
+          - Sid: DenyAccountAndIdentityChanges
+            Effect: Deny
+            Action: ["iam:*", "organizations:*", "account:*", "sso:*", "sso-directory:*", "identitystore:*",
+                     sts:AssumeRole, sts:AssumeRoleWithWebIdentity, sts:AssumeRoleWithSAML]
+            Resource: "*"
+
+Outputs:
+  PermissionsBoundaryArn:
+    Value: !Ref PermissionsBoundaryPolicy

@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# team-assistant-cdk-policies (docs/adr/0001). Deployed by `make bootstrap` before
+# `cdk bootstrap`: TeamAssistantCdkExecution, TeamAssistantCdkExecutionRoles,
+# TeamAssistantCdkExecutionGateway and TeamAssistantCdkExecutionWeb are the only policies of the
+# CloudFormation execution role
+# of this project's CDK bootstrap
+# (cdk bootstrap --cloudformation-execution-policies), replacing the AdministratorAccess default.
+#
+# The execution role deploys only TeamAssistant-<env>. It holds what the stack needs: a change
+# that adds a resource type adds the actions for it here, scoped to this
+# project's names, after `make diff` or a stack event shows which are missing.
+# IAM roles can be created only under the path /team-assistant/ and only with a permissions
+# boundary named TeamAssistantCdkPermissionsBoundary-<env> (infra/bootstrap/boundary.yaml).
+#
+# Managed policies are account-wide (IAM is global), so region parts of ARNs are wildcards.
+# Names: infra/team_assistant_infra/naming.py; infra/tests/test_bootstrap.py keeps both in step.
+Description: team-assistant least-privilege CDK execution policy
+
+Resources:
+  ExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: TeamAssistantCdkExecution
+      Description: CloudFormation execution policy of the team-assistant CDK bootstrap (qualifier teamasst)
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: BootstrapVersion
+            # CloudFormation reads the BootstrapVersion parameter of every CDK stack with this role.
+            Effect: Allow
+            Action: [ssm:GetParameter, ssm:GetParameters]
+            Resource: !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/cdk-bootstrap/teamasst/version
+          - Sid: UserPoolCreate
+            # CreateUserPool has no resource to name (the pool does not exist yet); the request
+            # must carry this project's tag, which CloudFormation copies from the stack.
+            Effect: Allow
+            Action: cognito-idp:CreateUserPool
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: UserPool
+            # Only pools that carry this project's tag. The login style (managed login branding)
+            # and the resource server are authorized on the pool too.
+            Effect: Allow
+            Action: [cognito-idp:DescribeUserPool, cognito-idp:UpdateUserPool, cognito-idp:DeleteUserPool,
+                     cognito-idp:GetUserPoolMfaConfig, cognito-idp:SetUserPoolMfaConfig,
+                     cognito-idp:CreateUserPoolClient, cognito-idp:DescribeUserPoolClient,
+                     cognito-idp:UpdateUserPoolClient, cognito-idp:DeleteUserPoolClient,
+                     cognito-idp:CreateUserPoolDomain, cognito-idp:UpdateUserPoolDomain,
+                     cognito-idp:DeleteUserPoolDomain,
+                     cognito-idp:CreateManagedLoginBranding, cognito-idp:DescribeManagedLoginBrandingByClient,
+                     cognito-idp:DescribeManagedLoginBranding, cognito-idp:UpdateManagedLoginBranding,
+                     cognito-idp:DeleteManagedLoginBranding,
+                     cognito-idp:CreateResourceServer, cognito-idp:DescribeResourceServer,
+                     cognito-idp:UpdateResourceServer, cognito-idp:DeleteResourceServer,
+                     cognito-idp:TagResource, cognito-idp:UntagResource, cognito-idp:ListTagsForResource]
+            Resource: !Sub arn:${AWS::Partition}:cognito-idp:*:${AWS::AccountId}:userpool/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/project: team-assistant
+          - Sid: UserPoolDomainRead
+            # DescribeUserPoolDomain takes a domain name and supports no resource in IAM.
+            Effect: Allow
+            Action: cognito-idp:DescribeUserPoolDomain
+            Resource: "*"
+          - Sid: MemoryCreate
+            # CreateMemory has no resource to name; the request must carry this project's tag.
+            Effect: Allow
+            Action: bedrock-agentcore:CreateMemory
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: Memory
+            # Only this project's memories, by name (a memory id is <name>-<10 characters>).
+            # Not by tag: while a memory is being deleted its tags no longer authorize, and
+            # CloudFormation's GetMemory was denied in the middle of a stack deletion.
+            # No access to the content: events are for the agent's role, not for deployments.
+            Effect: Allow
+            Action: [bedrock-agentcore:GetMemory, bedrock-agentcore:UpdateMemory, bedrock-agentcore:DeleteMemory,
+                     bedrock-agentcore:TagResource, bedrock-agentcore:UntagResource,
+                     bedrock-agentcore:ListTagsForResource]
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/team_assistant_*
+          - Sid: GithubProvider
+            # The GitHub credential provider of AgentCore Identity. Calls are authorized
+            # on the account's default token vault and on the provider, by name (IAM service
+            # reference for bedrock-agentcore, resource types token-vault and
+            # oauth2credentialprovider). CreateOauth2CredentialProvider also checks
+            # CreateTokenVault on the default vault (the service creates the vault with the
+            # account's first provider; without it the create fails with AccessDenied).
+            Effect: Allow
+            Action: [bedrock-agentcore:CreateTokenVault,
+                     bedrock-agentcore:CreateOauth2CredentialProvider, bedrock-agentcore:GetOauth2CredentialProvider,
+                     bedrock-agentcore:UpdateOauth2CredentialProvider, bedrock-agentcore:DeleteOauth2CredentialProvider,
+                     bedrock-agentcore:TagResource, bedrock-agentcore:UntagResource,
+                     bedrock-agentcore:ListTagsForResource]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:token-vault/default
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:token-vault/default/oauth2credentialprovider/team-assistant-*
+          - Sid: GithubSecret
+            # The secret that holds the GitHub OAuth App's client secret, by name. The stack
+            # creates it with a generated placeholder; make github writes the value with the
+            # operator's profile. GetSecretValue: with clientSecretSource EXTERNAL, AgentCore
+            # reads the secret with the credentials of whoever creates the provider, here this
+            # role (without it: AccessDenied "when retrieving the provided secret").
+            Effect: Allow
+            Action: [secretsmanager:GetSecretValue,
+                     secretsmanager:CreateSecret, secretsmanager:DescribeSecret, secretsmanager:UpdateSecret,
+                     secretsmanager:DeleteSecret, secretsmanager:TagResource, secretsmanager:UntagResource]
+            Resource: !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:team-assistant/*
+          - Sid: GithubSecretPlaceholder
+            # GenerateSecretString: GetRandomPassword has no resource (IAM service reference).
+            Effect: Allow
+            Action: secretsmanager:GetRandomPassword
+            Resource: "*"
+          - Sid: RuntimeCreate
+            # AgentCore authorizes a create before the id exists (runtime/*), and the name is no
+            # condition key: the request must carry this project's tags instead.
+            # CreateAgentRuntimeEndpoint: the DEFAULT endpoint, created with the Runtime.
+            Effect: Allow
+            Action: [bedrock-agentcore:CreateAgentRuntime, bedrock-agentcore:CreateAgentRuntimeEndpoint]
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:runtime/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+              "Null":
+                aws:RequestTag/env: "false"
+          - Sid: Runtime
+            Effect: Allow
+            Action: [bedrock-agentcore:UpdateAgentRuntime, bedrock-agentcore:DeleteAgentRuntime,
+                     bedrock-agentcore:GetAgentRuntime, bedrock-agentcore:ListAgentRuntimeVersions,
+                     bedrock-agentcore:ListAgentRuntimeEndpoints, bedrock-agentcore:GetAgentRuntimeEndpoint,
+                     bedrock-agentcore:CreateAgentRuntimeEndpoint, bedrock-agentcore:UpdateAgentRuntimeEndpoint,
+                     bedrock-agentcore:DeleteAgentRuntimeEndpoint, bedrock-agentcore:TagResource,
+                     bedrock-agentcore:UntagResource, bedrock-agentcore:ListTagsForResource]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:runtime/team_assistant_*
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:runtime/team_assistant_*/runtime-endpoint/*
+          - Sid: RuntimeTagOnCreate
+            # Tags sent with the create, when the id does not exist yet.
+            Effect: Allow
+            Action: bedrock-agentcore:TagResource
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:runtime/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: RuntimeWorkloadIdentity
+            # The service creates a workload identity named after the Runtime; the calls are
+            # authorized on the account's one directory and on the identity.
+            Effect: Allow
+            Action: [bedrock-agentcore:CreateWorkloadIdentity, bedrock-agentcore:GetWorkloadIdentity,
+                     bedrock-agentcore:UpdateWorkloadIdentity, bedrock-agentcore:DeleteWorkloadIdentity,
+                     bedrock-agentcore:TagResource, bedrock-agentcore:UntagResource,
+                     bedrock-agentcore:ListTagsForResource]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default/workload-identity/team_assistant_*
+          - Sid: RuntimeIdentityServiceRole
+            # AgentCore's own service-linked role for workload identities, created with the
+            # account's first Runtime (AgentCore developer guide, runtime-oauth).
+            Effect: Allow
+            Action: iam:CreateServiceLinkedRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/runtime-identity.bedrock-agentcore.amazonaws.com/AWSServiceRoleForBedrockAgentCoreRuntimeIdentity
+            Condition:
+              StringEquals:
+                iam:AWSServiceName: runtime-identity.bedrock-agentcore.amazonaws.com
+          - Sid: AgentImageRead
+            # AgentCore checks with the caller's permissions that the image can be read.
+            Effect: Allow
+            Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:DescribeImages,
+                     ecr:DescribeRepositories, ecr:GetRepositoryPolicy]
+            Resource: !Sub arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/cdk-teamasst-container-assets-*
+
+  ExecutionRolesPolicy:
+    # Second half of the execution role's permissions (one managed policy holds at most 6144
+    # characters): the rules for IAM roles and every explicit Deny.
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: TeamAssistantCdkExecutionRoles
+      Description: CloudFormation execution policy (IAM roles, explicit denies) of the team-assistant CDK bootstrap
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AppRoles
+            # No iam:UpdateAssumeRolePolicy: who may assume a role is fixed when it is created.
+            Effect: Allow
+            Action: [iam:CreateRole, iam:PutRolePolicy]
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/team-assistant/*
+            Condition:
+              StringLike:
+                iam:PermissionsBoundary: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/TeamAssistantCdkPermissionsBoundary-*
+          - Sid: AppRolesLifecycle
+            # IAM sets iam:PermissionsBoundary only on requests that create a role or change its
+            # policies, so these actions cannot carry that condition. They grant nothing: they
+            # tag, describe, remove policies from or delete a role that was created with the boundary.
+            Effect: Allow
+            Action: [iam:TagRole, iam:UntagRole, iam:UpdateRole, iam:UpdateRoleDescription,
+                     iam:DeleteRolePolicy, iam:DetachRolePolicy, iam:DeleteRole]
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/team-assistant/*
+          - Sid: AppRolesRead
+            Effect: Allow
+            Action: [iam:GetRole, iam:GetRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:ListRoleTags]
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/team-assistant/*
+          - Sid: PassAppRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/team-assistant/*
+            Condition:
+              StringEquals:
+                iam:PassedToService: bedrock-agentcore.amazonaws.com
+          - Sid: DenyRolesWithoutBoundary
+            Effect: Deny
+            Action: [iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy, iam:PutRolePermissionsBoundary]
+            Resource: "*"
+            Condition:
+              StringNotLike:
+                iam:PermissionsBoundary: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/TeamAssistantCdkPermissionsBoundary-*
+          - Sid: DenyTrustChangesUsersKeys
+            Effect: Deny
+            Action: [iam:UpdateAssumeRolePolicy, iam:DeleteRolePermissionsBoundary, iam:CreateUser, iam:CreateAccessKey,
+                     iam:CreateLoginProfile, iam:PutUserPolicy, iam:AttachUserPolicy, iam:AttachGroupPolicy,
+                     iam:PutGroupPolicy, iam:AddUserToGroup, iam:CreatePolicy, iam:CreateSAMLProvider,
+                     iam:CreateOpenIDConnectProvider]
+            Resource: "*"
+          - Sid: DenyPolicyChanges
+            Effect: Deny
+            Action: [iam:CreatePolicyVersion, iam:DeletePolicy, iam:DeletePolicyVersion, iam:SetDefaultPolicyVersion]
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/TeamAssistantCdk*
+          - Sid: DenyToolkitRoles
+            Effect: Deny
+            Action: "iam:*"
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-*
+          - Sid: DenyAccountLevel
+            Effect: Deny
+            Action: ["organizations:*", "account:*"]
+            Resource: "*"
+
+  ExecutionGatewayPolicy:
+    # Third part (the first one is full): what the stack needs for the AgentCore Gateway.
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: TeamAssistantCdkExecutionGateway
+      Description: CloudFormation execution policy (AgentCore Gateway) of the team-assistant CDK bootstrap
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: GatewayCreate
+            # CreateGateway has no resource to name; the request must carry this project's tag.
+            Effect: Allow
+            Action: bedrock-agentcore:CreateGateway
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: Gateway
+            # Only this project's gateways, by name (a gateway id is <name>-<10 characters>).
+            # Target actions are authorized on the gateway (IAM service reference).
+            Effect: Allow
+            Action: [bedrock-agentcore:GetGateway, bedrock-agentcore:UpdateGateway, bedrock-agentcore:DeleteGateway,
+                     bedrock-agentcore:SynchronizeGatewayTargets,
+                     bedrock-agentcore:CreateGatewayTarget, bedrock-agentcore:GetGatewayTarget,
+                     bedrock-agentcore:UpdateGatewayTarget, bedrock-agentcore:DeleteGatewayTarget,
+                     bedrock-agentcore:TagResource, bedrock-agentcore:UntagResource,
+                     bedrock-agentcore:ListTagsForResource]
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:gateway/team-assistant-*
+          - Sid: GatewayTagOnCreate
+            # Tags sent with the create are authorized on gateway/*, before the id exists
+            # (without it: AccessDenied), as for the Runtime.
+            Effect: Allow
+            Action: bedrock-agentcore:TagResource
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:gateway/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: GatewayWorkloadIdentity
+            # The service creates and deletes a workload identity with the gateway. Its name
+            # starts with the gateway's name, as the Runtime's does.
+            Effect: Allow
+            Action: [bedrock-agentcore:CreateWorkloadIdentity, bedrock-agentcore:DeleteWorkloadIdentity]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:workload-identity-directory/default/workload-identity/team-assistant-*
+
+  ExecutionWebPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: TeamAssistantCdkExecutionWeb
+      Description: CloudFormation execution policy (web page on S3 and CloudFront) of the team-assistant CDK bootstrap
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: WebBucket
+            # The page's bucket, by name (naming.py: ta-<env>-web-<login suffix>). Actions from
+            # the handlers of the CloudFormation resource schema AWS::S3::Bucket that this
+            # bucket uses (public access block, encryption, ownership, tags) and the reads its
+            # read handler makes; AWS::S3::BucketPolicy for the policy CloudFront reads through.
+            Effect: Allow
+            Action: [s3:CreateBucket, s3:DeleteBucket, s3:ListBucket,
+                     s3:PutBucketPublicAccessBlock, s3:GetBucketPublicAccessBlock,
+                     s3:PutEncryptionConfiguration, s3:GetEncryptionConfiguration,
+                     s3:PutBucketOwnershipControls, s3:GetBucketOwnershipControls,
+                     s3:PutBucketTagging, s3:GetBucketTagging, s3:TagResource, s3:UntagResource,
+                     s3:ListTagsForResource,
+                     s3:GetBucketAcl, s3:GetBucketCORS, s3:GetBucketLogging, s3:GetBucketNotification,
+                     s3:GetBucketObjectLockConfiguration, s3:GetBucketVersioning, s3:GetBucketWebsite,
+                     s3:GetAccelerateConfiguration, s3:GetLifecycleConfiguration,
+                     s3:GetReplicationConfiguration,
+                     s3:PutBucketPolicy, s3:GetBucketPolicy, s3:DeleteBucketPolicy]
+            Resource: !Sub arn:${AWS::Partition}:s3:::ta-*-web-*
+          - Sid: WebDistribution
+            # A distribution's id does not exist before it is created: distribution/* of this
+            # account (AWS::CloudFront::Distribution handlers).
+            Effect: Allow
+            Action: [cloudfront:CreateDistribution, cloudfront:CreateDistributionWithTags,
+                     cloudfront:GetDistribution, cloudfront:GetDistributionConfig,
+                     cloudfront:UpdateDistribution, cloudfront:DeleteDistribution,
+                     cloudfront:TagResource, cloudfront:UntagResource, cloudfront:ListTagsForResource]
+            Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
+          - Sid: WebAccessControlAndHeaders
+            # The origin access control (CloudFront signs its requests to the bucket) and the
+            # response headers policy (AWS::CloudFront::OriginAccessControl and
+            # AWS::CloudFront::ResponseHeadersPolicy handlers).
+            Effect: Allow
+            Action: [cloudfront:CreateOriginAccessControl, cloudfront:GetOriginAccessControl,
+                     cloudfront:UpdateOriginAccessControl, cloudfront:DeleteOriginAccessControl,
+                     cloudfront:CreateResponseHeadersPolicy, cloudfront:GetResponseHeadersPolicy,
+                     cloudfront:UpdateResponseHeadersPolicy, cloudfront:DeleteResponseHeadersPolicy]
+            Resource:
+              - !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:origin-access-control/*
+              - !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:response-headers-policy/*
+
+Outputs:
+  ExecutionPolicyArn:
+    Value: !Ref ExecutionPolicy
+  ExecutionRolesPolicyArn:
+    Value: !Ref ExecutionRolesPolicy
+  ExecutionGatewayPolicyArn:
+    Value: !Ref ExecutionGatewayPolicy
+  ExecutionWebPolicyArn:
+    Value: !Ref ExecutionWebPolicy

@@ -1,0 +1,23 @@
+[project]
+name = "team-assistant-infra"
+version = "0.1.0"
+description = "CDK app that deploys team-assistant"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "aws-cdk-lib==2.275.0",
+    "constructs==10.8.1",
+]
+
+[dependency-groups]
+dev = ["pytest==9.2.0", "pyyaml==6.0.3"]
+
+# The CDK app is a set of scripts run from this directory, not an installable package, and it
+# is not part of the agent's project in the repository root (its own lock file and venv).
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
