@@ -1,0 +1,11 @@
+{
+  "description": "The agent failed (a prompt containing 'fail'): the agent's own message.",
+  "steps": [
+    {
+      "event": {
+        "type": "error",
+        "message": "the agent could not answer; the operator can find the cause in the log"
+      }
+    }
+  ]
+}

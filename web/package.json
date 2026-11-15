@@ -1,0 +1,21 @@
+{
+  "name": "team-assistant-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "mock": "vite --mode mock",
+    "build": "vite build",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vitest run && vite build && node scripts/no-mock.mjs"
+  },
+  "dependencies": {
+    "@fontsource/inter": "5.3.0",
+    "markdown-it": "15.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

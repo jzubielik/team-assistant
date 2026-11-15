@@ -1,0 +1,18 @@
+{
+  "//": "Code that runs in Node, not in the browser: the Vite config, the mock agent, scripts.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2023"
+    ],
+    "types": [
+      "node"
+    ],
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "vite.config.ts",
+    "mock"
+  ]
+}

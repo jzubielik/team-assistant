@@ -1,0 +1,29 @@
+{
+  "description": "The turns of the earlier conversations in conversations.json, by session id. A session the mock does not know has no turns.",
+  "sessions": {
+    "session-00000000-0000-4000-8000-000000000001": {
+      "event": {
+        "type": "history",
+        "turns": [
+          { "role": "user", "text": "What should our release checklist contain?" },
+          {
+            "role": "assistant",
+            "text": "A short one:\n\n1. All tests green on the release branch\n2. Changelog updated\n3. Version bumped and tagged\n4. Deployed to staging and smoke-tested"
+          }
+        ]
+      }
+    },
+    "session-00000000-0000-4000-8000-000000000002": {
+      "event": {
+        "type": "history",
+        "turns": [
+          { "role": "user", "text": "Do you remember what I told you yesterday?" },
+          {
+            "role": "assistant",
+            "text": "Yes: you prefer **short answers** and you work on `aws/bedrock-agentcore-sdk-python`."
+          }
+        ]
+      }
+    }
+  }
+}

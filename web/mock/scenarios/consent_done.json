@@ -1,0 +1,4 @@
+{
+  "description": "The answer to a forwarded consent ({\"consent\": {\"session_uri\": ...}}).",
+  "steps": [{ "event": { "type": "consent_done" } }]
+}

@@ -1,0 +1,12 @@
+{
+  "description": "An ordinary answer: text in pieces, then done. The mock cuts each text event into a few words at a time.",
+  "steps": [
+    {
+      "event": {
+        "type": "text",
+        "data": "Sure. A few things I can help with:\n\n- **Open issues** of a public GitHub repository, with their labels\n- What you told me earlier, in this or an earlier conversation\n- Short, precise answers about your team's work\n\nAsk me about the open issues of `aws/bedrock-agentcore-sdk-python` to see the GitHub consent."
+      }
+    },
+    { "event": { "type": "done", "usage": { "input": 1240, "output": 96 } } }
+  ]
+}

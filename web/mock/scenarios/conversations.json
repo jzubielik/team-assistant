@@ -1,0 +1,22 @@
+{
+  "description": "Earlier conversations the mock starts with; conversations of this run are added to them. Unsorted on purpose: the page sorts.",
+  "steps": [
+    {
+      "event": {
+        "type": "conversations",
+        "items": [
+          {
+            "session_id": "session-00000000-0000-4000-8000-000000000002",
+            "created_at": "2026-11-12T09:30:00Z",
+            "title": "How memory works"
+          },
+          {
+            "session_id": "session-00000000-0000-4000-8000-000000000001",
+            "created_at": "2026-11-14T16:05:00Z",
+            "title": "Release checklist"
+          }
+        ]
+      }
+    }
+  ]
+}

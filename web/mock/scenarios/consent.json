@@ -1,0 +1,14 @@
+{
+  "description": "A question about issues: the first time, a consent request, then the answer once a consent arrives (as the real tool waits). The mock fills in url and state.",
+  "steps": [
+    { "event": { "type": "auth_url", "url": "", "state": "" } },
+    { "wait": "consent" },
+    {
+      "event": {
+        "type": "text",
+        "data": "There are **12 open issues**. The newest three:\n\n- **[#418](https://github.com/aws/bedrock-agentcore-sdk-python/issues/418)** Memory session manager drops the last event on shutdown `bug`\n- **[#415](https://github.com/aws/bedrock-agentcore-sdk-python/issues/415)** Support custom headers in the runtime client `enhancement`\n- **[#409](https://github.com/aws/bedrock-agentcore-sdk-python/issues/409)** Document gateway targets for runtimes `documentation`\n\nWant me to look at any of them more closely?"
+      }
+    },
+    { "event": { "type": "done", "usage": { "input": 1840, "output": 212 } } }
+  ]
+}
