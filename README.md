@@ -5,6 +5,10 @@ the browser or the terminal, and the assistant remembers the conversation, the u
 preferences and facts across conversations, and reads GitHub issues with the user's own GitHub
 authorization.
 
+
+https://github.com/user-attachments/assets/621b6bd2-6a10-460b-9ec8-5647b2635c5c
+
+
 > **This is a demonstration project, not a product.** It shows how AgentCore's building
 > blocks fit together with per-user identity end to end. It has been deployed and checked
 > against a real AWS account, but it has no alarms, no load testing, no backup and no
