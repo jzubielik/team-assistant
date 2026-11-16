@@ -52,6 +52,15 @@ staged() {
 	return "$status"
 }
 
+# Known vulnerabilities accepted for now, each with its reason. Remove an entry when the
+# dependency that blocks the fix allows it.
+# GHSA-mf5v-w3w3-f6cg (CVE-2026-126360), opentelemetry-api 1.45.1, fixed in 1.45.2: quadratic
+# regular-expression time when a traceparent value holds a newline. aws-opentelemetry-distro
+# 0.22.0 (the latest release) pins opentelemetry-api and opentelemetry-sdk to exactly 1.45.1.
+# Not reachable here: HTTP header values cannot hold a newline, and the agent extracts no trace
+# context from a JSON body.
+AUDIT_IGNORED=(--ignore-vuln GHSA-mf5v-w3w3-f6cg)
+
 audit() {
 	local status=0 dir req
 	for dir in . infra; do
@@ -59,7 +68,8 @@ audit() {
 		echo "+ pip-audit ($dir/uv.lock)" >&2
 		req=$(mktemp)
 		(cd "$dir" && uv export --frozen --no-emit-project --quiet --format requirements-txt -o "$req")
-		pip-audit --strict --disable-pip --require-hashes --progress-spinner off -r "$req" || status=1
+		pip-audit --strict --disable-pip --require-hashes --progress-spinner off "${AUDIT_IGNORED[@]}" \
+			-r "$req" || status=1
 		rm -f "$req"
 	done
 	return "$status"
