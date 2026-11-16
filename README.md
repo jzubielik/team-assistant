@@ -6,7 +6,7 @@ preferences and facts across conversations, and reads GitHub issues with the use
 authorization.
 
 
-https://github.com/user-attachments/assets/621b6bd2-6a10-460b-9ec8-5647b2635c5c
+https://github.com/user-attachments/assets/41862dc0-2811-4d38-b5fb-035fe27bb614
 
 
 > **This is a demonstration project, not a product.** It shows how AgentCore's building
