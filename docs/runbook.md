@@ -101,7 +101,7 @@ the last one is closed, so an open one may still hold the first user's login.
 Check the environment and look into Memory:
 
 ```
-make smoke ENV=dev                               # twelve PASS lines; alice and bob logged in, alice consented to GitHub
+make smoke ENV=dev                               # fourteen PASS lines; alice and bob logged in, alice consented to GitHub
 make memory ENV=dev USER=alice SESSION=<id>      # messages and long-term records of a user
 make measure ENV=dev                             # report in measurements/<date>-<env>.md (gitignored)
 ```

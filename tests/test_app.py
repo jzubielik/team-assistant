@@ -66,13 +66,40 @@ def test_session_manager_gets_the_retrieval_settings_from_the_config(context, ma
     assert manager.retrieval == {"/facts/{actorId}/": setting}
 
 
-def test_two_users_with_the_same_session_id_get_separate_histories(context, managers, agent_env):
+REFUSED = [{"type": "error", "message": app.OTHER_USERS_SESSION}]
+
+
+def test_a_session_id_used_by_one_user_is_refused_to_another_before_memory_and_model(
+    context, managers, agent_env, caplog
+):
+    # The Runtime sends both users' requests to the same microVM (this process).
+    other = SimpleNamespace(session_id=context.session_id, request_headers=bearer({"sub": "u-2"}))
+    caplog.set_level(logging.INFO, logger="team_assistant")
+    run({"prompt": "hi"}, context, managers)
+    events, model = run({"prompt": SECRET_PROMPT}, other, managers)
+    assert events == REFUSED and model.calls == []
+    assert [m.opened_with[1] for m in managers.built] == ["u-1"]
+    line = json.loads(caplog.records[-1].getMessage())
+    assert (line["outcome"], line["actor"], line["reason"]) == (
+        "rejected",
+        "u-2",
+        "session of another user",
+    )
+    # The first user goes on, and the other user is free in a session of their own.
+    assert run({"prompt": "again"}, context, managers)[0][-1]["type"] == "done"
+    other.session_id = "session-" + "9" * 30
+    assert run({"prompt": "hi"}, other, managers)[0][-1]["type"] == "done"
+
+
+def test_another_users_session_is_refused_for_reads_and_consents_too(context, managers, agent_env):
     other = SimpleNamespace(session_id=context.session_id, request_headers=bearer({"sub": "u-2"}))
     run({"prompt": "hi"}, context, managers)
-    run({"prompt": "hi"}, other, managers)
-    first, second = managers.built
-    assert first.opened_with[1:3] == ("u-1", context.session_id)
-    assert second.opened_with[1:3] == ("u-2", context.session_id)
+    calls = []
+    assert consent_run(CONSENT, other, managers, lambda *a: calls.append(a)) == REFUSED
+    reader = MemoryReader()
+    for body in ({"history": {}}, {"conversations": {}}):
+        assert read_run(body, other, managers, reader) == REFUSED
+    assert calls == [] and reader.calls == []
 
 
 @pytest.mark.parametrize("headers", [None, {}, {"Authorization": "Basic abc"}])

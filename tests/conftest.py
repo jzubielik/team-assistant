@@ -13,6 +13,14 @@ from strands.models import Model
 from strands.session.session_manager import SessionManager
 
 
+@pytest.fixture(autouse=True)
+def _no_sessions_from_other_tests():
+    """Each test starts as a new process would: no session id belongs to a user yet."""
+    from team_assistant import app
+
+    app._SESSION_USERS.clear()
+
+
 class FakeModel(Model):
     """Streams ``chunks`` as the answer and reports ``usage``; raises ``error`` if given."""
 

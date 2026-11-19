@@ -23,7 +23,10 @@ Who can do what in one environment.
    issued without the binding.
 4. **Agent.** The agent takes the user id from the verified token (`sub`) and opens only that
    user's conversation history. A request without a usable token is an error; there is no
-   default user.
+   default user. The Runtime routes by session id alone, so the agent keeps each session id to
+   the user who used it first for as long as the session's microVM runs, and refuses it to
+   anyone else: two users never share a microVM. A stopped session's id is free again; its
+   history stays per user.
 5. **Permissions.** The agent's role (below) can call one model, read and write one Memory and
    get users' GitHub tokens from one provider; the gateway's role can only exchange tokens
    through its own provider and invoke this Runtime. Deployments run with a

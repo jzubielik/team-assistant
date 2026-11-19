@@ -64,8 +64,9 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
    client and the audience (the token must have been issued for this environment's agent).
    A request without a valid token is refused with 401 at the gateway or here.
 3. The Runtime routes the request to the container of that session, starting one if needed.
-4. `app.py` checks the prompt, reads the user id from the token (`identity.py`) and opens the
-   history for (user id, session id) in AgentCore Memory (`memory.py`).
+4. `app.py` checks the prompt, reads the user id from the token (`identity.py`), refuses a
+   session id that another user used first in this container, and opens the history for
+   (user id, session id) in AgentCore Memory (`memory.py`).
 5. The session manager searches the user's preference and fact namespaces with the new message
    (`RetrieveMemoryRecords`, limits from `[memory.retrieval.*]` in `config/agent.toml`) and
    prepends what it finds to that message inside `<user_context>`. A failed search is logged as

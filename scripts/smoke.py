@@ -1,8 +1,8 @@
 """Checks against a deployed environment.
 
 - Conversation: the agent remembers a conversation, a stopped session is restored from
-  Memory, nobody gets in without a token, and two users with the same session id do not see
-  each other's messages.
+  Memory, nobody gets in without a token, a session id in use by one user is refused to
+  another, and once that session is stopped the other user sees none of its messages.
 - Long-term memory: a preference stated in one session is followed in a new one, and another
   user gets none of it.
 - GitHub: a user who consented gets issues through the vaulted token; a user who did not is
@@ -177,6 +177,23 @@ def check_other_user(
     )
 
 
+def check_session_binding(
+    ask: Ask, texts_of: Callable[[str, str], list[str]], user_a: str, user_b: str, session: str
+) -> Check:
+    """While the first user's session runs, the agent refuses its id to the other user and
+    stores nothing for them. ``ask`` must not stop the session first."""
+    try:
+        answer = ask(user_b, session, "Which word did I ask you to remember? If none, say NONE.")
+    except chat.ChatError as error:
+        if "another user" not in str(error):
+            return False, f"{user_b} was refused for another reason: {shown(str(error))}"
+    else:
+        return False, f"{user_b} was answered in {user_a}'s running session: {shown(answer)}"
+    if texts_of(user_b, session):
+        return False, f"the refused question was stored for {user_b}"
+    return True, f"{user_b} is refused {user_a}'s running session, and nothing is stored"
+
+
 def check_conversations(read: Read, user: str, session: str) -> Check:
     """The web page's list: the smoke session is the user's, with the title the agent stored.
     Asked in the smoke session itself: a new session id would start a runtime session that
@@ -193,6 +210,26 @@ def check_conversations(read: Read, user: str, session: str) -> Check:
     if not item.get("title"):
         return False, "the smoke session is listed without a title"
     return True, f"{user}'s list has the smoke session, titled {shown(item['title'])}"
+
+
+def check_conversations_isolation(read: Read, user_a: str, user_b: str, session: str) -> Check:
+    """The other user's list holds none of the first user's sessions. The smoke session id is
+    left out of the comparison: both users asked with it (check "other user"), so each has a
+    session of their own under that id. The first user's other sessions have random ids
+    (check "new session"), which the other user cannot have."""
+    lists = {}
+    # The other user first: they used the smoke session id last (one stop less).
+    for user in (user_b, user_a):
+        event = read(user, session, {"conversations": {}})
+        if event.get("type") != "conversations":
+            return False, f"the agent answered {user} {shown(str(event))}"
+        lists[user] = {item.get("session_id") for item in event.get("items", [])}
+    own = lists[user_a] - {session}
+    if not own:
+        return False, f"{user_a}'s list has no session besides the smoke session (cannot compare)"
+    if own & lists[user_b]:
+        return False, f"{user_b}'s list holds {len(own & lists[user_b])} of {user_a}'s sessions"
+    return True, f"{user_b}'s list holds none of {user_a}'s {len(own)} other session(s)"
 
 
 def check_history(read: Read, user: str, session: str, word: str) -> Check:
@@ -368,8 +405,22 @@ def main(argv: list[str] | None = None) -> int:
     def token(user: str) -> str:
         return auth.access_token(endpoints, args.env, user)
 
-    def ask(user: str, session_id: str, prompt: str) -> str:
+    # The agent keeps a session id to the user who used it first, for as long as the session
+    # runs. Before another user gets the same id, the session is stopped.
+    users: dict[str, str] = {}
+
+    def switch_to(user: str, session_id: str) -> None:
+        previous = users.get(session_id)
+        if previous not in (None, user):
+            stop(previous, session_id)
+        users[session_id] = user
+
+    def ask_running(user: str, session_id: str, prompt: str) -> str:
         return answer_text(chat.invoke(url, token(user), session_id, prompt))
+
+    def ask(user: str, session_id: str, prompt: str) -> str:
+        switch_to(user, session_id)
+        return ask_running(user, session_id, prompt)
 
     def ask_events(user: str, session_id: str, prompt: str) -> list[dict]:
         return until_consent(chat.invoke(url, token(user), session_id, prompt))
@@ -391,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     bucket_url = f"https://{args.web_bucket}.s3.{args.region}.amazonaws.com/index.html"
 
     def read(user: str, session_id: str, body: dict) -> dict:
+        switch_to(user, session_id)
         events = list(chat.invoke(url, token(user), session_id, None, body=body))
         return events[0] if events else {}
 
@@ -430,15 +482,23 @@ def main(argv: list[str] | None = None) -> int:
                     lambda: list(chat.invoke(direct_url, token(a), new_session_id(), "hi"))
                 ),
             ),
-            ("other user", lambda: check_other_user(ask, texts_of, a, b, session, word)),
             ("conversations", lambda: check_conversations(read, a, session)),
             ("history", lambda: check_history(read, a, session, word)),
+            (
+                "session binding",
+                lambda: check_session_binding(ask_running, texts_of, a, b, session),
+            ),
+            ("other user", lambda: check_other_user(ask, texts_of, a, b, session, word)),
             ("history isolation", lambda: check_history_isolation(read, a, b, session, word)),
             (
                 "new session",
                 lambda: check_new_session(ask, records_of, wait_for_record, a, signature),
             ),
             ("isolation", lambda: check_isolation(ask, records_of, a, b, signature)),
+            (
+                "conversations isolation",
+                lambda: check_conversations_isolation(read, a, b, session),
+            ),
             ("github tool", lambda: check_github_tool(ask_events, a, b)),
             (
                 "page served",

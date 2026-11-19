@@ -18,8 +18,8 @@ https://github.com/user-attachments/assets/41862dc0-2811-4d38-b5fb-035fe27bb614
 
 - **The user's identity decides everything.** The agent takes the user id from a verified
   Cognito token (`sub`), never from the request. Conversation history, long-term memory and the
-  GitHub token are all keyed by it; two users never see each other's data, even with the same
-  session id.
+  GitHub token are all keyed by it; two users never see each other's data, and a session id
+  in use by one user is refused to another.
 - **One way in.** An AgentCore Gateway checks the token, exchanges it for one bound to the agent
   (OAuth token exchange, RFC 8693) and relays the request. The AgentCore Runtime accepts only
   requests that came through this gateway; the same valid token sent straight to the Runtime is

@@ -9,7 +9,8 @@ A request is one user message, ``{"prompt": ...}``, or the forwarding of a GitHu
 4. run the model with the history and the GitHub tools list_issues and get_issue
    (github.py), streaming the answer.
 
-Steps 1 and 2 fail before anything is read from memory or sent to the model. The answer is a
+Steps 1 and 2 fail before anything is read from memory or sent to the model. So does a session
+id that another user used first in this process (``_other_users_session``). The answer is a
 stream of events (built in events.py), each a JSON object: ``{"type": "text", "data": ...}``
 for a piece of the answer, ``{"type": "auth_url", "url": ..., "state": ...}`` when the user
 must consent in GitHub first, then ``{"type": "done", "usage": {...}}``, or
@@ -61,6 +62,22 @@ SYSTEM_PROMPT = (
 
 app = BedrockAgentCoreApp()
 log = logging.getLogger("team_assistant")
+
+# Session id -> the user who used it first, for the life of this process.
+_SESSION_USERS: dict[str, str] = {}
+OTHER_USERS_SESSION = "this session id is in use by another user; start a new conversation"
+
+
+def _other_users_session(session_id: str | None, actor: str) -> bool:
+    """True when another user used this session id first in this process.
+
+    AgentCore Runtime sends every request with one session id to the same microVM, whoever
+    the user is, and leaves the mapping of sessions to users to the agent (developer guide,
+    runtime-sessions). Memory is kept per user, so a second user would read nothing of the
+    first; refusing them keeps one microVM, with its process and its role credentials, to one
+    user. The Runtime runs one session per microVM, so this holds one entry there.
+    """
+    return bool(session_id) and _SESSION_USERS.setdefault(session_id, actor) != actor
 
 
 class ModelCallError(Exception):
@@ -152,6 +169,10 @@ async def _consent(
         _log("rejected", None, None, usage, reason="identity")
         yield events.error(f"cannot tell who is asking: {error}")
         return
+    if _other_users_session(context.session_id, actor):
+        _log("rejected", actor, context.session_id, usage, reason="session of another user")
+        yield events.error(OTHER_USERS_SESSION)
+        return
     body = payload.get("consent")
     session_uri = body.get("session_uri") if isinstance(body, dict) else None
     try:
@@ -193,6 +214,10 @@ async def _read_memory(
     if not memory_id or not region or (kind == "history" and not session_id):
         _log("rejected", actor, session_id, usage, reason="session id or agent settings")
         yield events.error("the request has no session id, or the agent is not configured")
+        return
+    if _other_users_session(session_id, actor):
+        _log("rejected", actor, session_id, usage, reason="session of another user")
+        yield events.error(OTHER_USERS_SESSION)
         return
     client = make_client(region)
     try:
@@ -249,6 +274,10 @@ async def respond(
     if not session_id or not memory_id or not region:
         _log("rejected", actor, session_id, usage, reason="session id or agent settings")
         yield events.error("the request has no session id, or the agent is not configured")
+        return
+    if _other_users_session(session_id, actor):
+        _log("rejected", actor, session_id, usage, reason="session of another user")
+        yield events.error(OTHER_USERS_SESSION)
         return
     try:
         # Where the browser returns after a GitHub consent: chosen by the client's name from a
