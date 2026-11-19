@@ -5,6 +5,12 @@ from __future__ import annotations
 import re
 
 import aws_cdk as cdk
+
+# Imported for its side effect: jsii registers ArtifactManifest as a data type only when this
+# submodule is loaded, and reading `artifact.manifest` fails with "Unknown interface" when it
+# is not. aws-cdk-lib loads its submodules lazily, so without this line the load depends on
+# what the synthesis happened to touch first.
+import aws_cdk.cloud_assembly_schema  # noqa: F401
 import pytest
 from team_assistant_infra.stack import build_app
 
