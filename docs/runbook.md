@@ -108,7 +108,7 @@ make measure ENV=dev                             # report in measurements/<date>
 
 Long-term records appear about a minute after a conversation (the strategies run in the
 background). `make smoke` therefore takes about two minutes: its long-term memory checks wait
-up to five minutes for a record. `make measure` runs three conversations as alice and waits up
+up to five minutes for a record. `make measure` runs four conversations as alice and waits up
 to five minutes per namespace, so it can take a quarter of an hour. Run `make measure` before
 `make smoke`, or a few minutes after it: records a smoke run causes appear about a minute
 after it ends, and the purge at the start of `make measure` would not see them yet.
