@@ -290,6 +290,33 @@ def test_gateways_are_created_with_the_project_tag_and_managed_by_name():
     assert "bedrock-agentcore:GetWorkloadAccessToken" not in actions
 
 
+def test_distributions_are_created_with_the_project_tag_and_changed_only_with_it():
+    # A distribution's ARN holds only a generated id, so the tag is the only way to tell this
+    # project's distribution from another one of the account.
+    by_sid = {s["Sid"]: s for s in ALLOWS}
+    changing = {
+        "cloudfront:CreateDistribution": "WebDistributionCreate",
+        "cloudfront:CreateDistributionWithTags": "WebDistributionCreate",
+        "cloudfront:UpdateDistribution": "WebDistribution",
+        "cloudfront:DeleteDistribution": "WebDistribution",
+        "cloudfront:UntagResource": "WebDistribution",
+    }
+    for action, sid in changing.items():
+        holders = {s["Sid"] for s in ALLOWS if action in as_list(s["Action"])}
+        assert holders == {sid}, action
+    tagging = {s["Sid"] for s in ALLOWS if "cloudfront:TagResource" in as_list(s["Action"])}
+    assert tagging == {"WebDistributionCreate", "WebDistribution"}
+    create = by_sid["WebDistributionCreate"]["Condition"]
+    assert create == {"StringEquals": {"aws:RequestTag/project": "team-assistant"}}
+    assert by_sid["WebDistribution"]["Condition"] == PROJECT_TAG
+    # Reads have no condition (a deleted distribution has no tag) and change nothing.
+    read = by_sid["WebDistributionRead"]
+    assert "Condition" not in read
+    assert all(a.split(":")[1].startswith(("Get", "List")) for a in read["Action"])
+    for sid in ("WebDistributionCreate", "WebDistribution", "WebDistributionRead"):
+        assert text(by_sid[sid]["Resource"]).endswith(":distribution/*")
+
+
 BOUNDARY_ALLOWS = statements(next(iter(policies(BOUNDARY).values())), "Allow")
 # Boundary statements that cannot name this environment's resources, with the reason.
 BOUNDARY_WIDE = {

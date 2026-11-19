@@ -187,8 +187,11 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
 - **get_issue** gives the model an issue's text, cut at 2,000 characters and marked as the
   author's words, not instructions.
 - **Deployment** of the page uses a fourth bootstrap policy, `TeamAssistantCdkExecutionWeb`:
-  S3 on buckets named `ta-*-web-*`, CloudFront on this account's distributions, origin access
-  controls and response headers policies; actions from the CloudFormation resource schemas.
+  S3 on buckets named `ta-*-web-*`; CloudFront distributions that carry the tag
+  `project=team-assistant` (created with it, changed and deleted only with it; reads of any
+  distribution of the account); this account's origin access controls and response headers
+  policies, which have neither tags nor names in their ARNs. Actions from the CloudFormation
+  resource schemas.
 
 ## Residual risks
 
