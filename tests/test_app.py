@@ -9,10 +9,13 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import FakeModel, bearer, collect, collect_events
-from team_assistant import app
+from team_assistant import app, prompts
 from team_assistant.config import AgentConfig, RetrievalSetting
+from test_tracing import ToolThenTextModel, lookup
 
 CONFIG = AgentConfig("fake-model", 100, 30)
+# The real function: conftest replaces app._default_recall for every test.
+REAL_RECALL = app._default_recall
 SECRET_PROMPT = "my salary is 12345"
 
 
@@ -37,7 +40,7 @@ def test_streams_text_then_done(context, managers, agent_env):
         {"type": "done", "usage": {"input": 11, "output": 7}},
     ]
     assert len(model.calls) == 1
-    assert model.calls[0]["system_prompt"] == app.SYSTEM_PROMPT
+    assert model.calls[0]["system_prompt"] == prompts.SYSTEM_PROMPT
 
 
 def test_session_manager_is_built_with_sub_and_session_id_and_stores_both_turns(
@@ -100,6 +103,54 @@ def test_a_short_conversation_is_sent_whole(managers):
         agent.messages.append({"role": role, "content": [{"text": f"number {n}"}]})
     agent("and the next one?")
     assert len(model.calls) == 1 and len(model.calls[0]["messages"]) == 51
+
+
+def test_the_users_preferences_reach_the_system_prompt_and_the_memory_tools_the_agent(
+    context, managers, agent_env
+):
+    asked = []
+
+    def recall(region, memory_id, actor, session_id, limit):
+        asked.append((region, memory_id, actor, session_id, limit))
+        return ["Use Python for code."], [lookup]
+
+    model = ToolThenTextModel()
+    stream = app.respond(
+        {"prompt": "hi"},
+        context,
+        config=AgentConfig("fake-model", 100, 30, max_preferences=7),
+        model=model,
+        make_session_manager=managers,
+        make_tools=lambda on_auth_url, state: [],
+        recall=recall,
+    )
+    events = collect_events(stream)
+    assert asked == [("eu-west-1", "mem-1", "u-1", context.session_id, 7)]
+    prompt = model.calls[0]["system_prompt"]
+    assert prompt.startswith(prompts.SYSTEM_PROMPT) and "- Use Python for code." in prompt
+    # The model called the tool recall() gave: one tool event with its name, before the text.
+    assert events[0] == {"type": "tool", "name": "lookup"}
+    assert [e["type"] for e in events].count("tool") == 1 and events[-1]["type"] == "done"
+
+
+def test_a_failed_listing_of_preferences_costs_only_the_preferences(monkeypatch, caplog):
+    def refuse(client, memory_id, actor, limit):
+        raise RuntimeError(SECRET_PROMPT)
+
+    monkeypatch.setattr(app, "_memory_client", lambda region: object())
+    monkeypatch.setattr(app, "list_preferences", refuse)
+    caplog.set_level(logging.WARNING, logger="team_assistant")
+    preferences, tools = REAL_RECALL("eu-west-1", "mem-1", "u-1", "s-1", 5)
+    assert preferences == []
+    assert [t.tool_name for t in tools] == ["search_memory", "recall_conversations"]
+    line = json.loads(caplog.records[-1].getMessage())
+    assert line == {
+        "event": "preferences_failed",
+        "actor": "u-1",
+        "session": "s-1",
+        "error_type": "RuntimeError",
+    }
+    assert SECRET_PROMPT not in caplog.text
 
 
 REFUSED = [{"type": "error", "message": app.OTHER_USERS_SESSION}]

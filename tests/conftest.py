@@ -21,6 +21,15 @@ def _no_sessions_from_other_tests():
     app._SESSION_USERS.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_long_term_memory(monkeypatch):
+    """No stored preferences and no memory tools unless a test passes its own ``recall``:
+    the real one builds an AWS client."""
+    from team_assistant import app
+
+    monkeypatch.setattr(app, "_default_recall", lambda *args: ([], []))
+
+
 class FakeModel(Model):
     """Streams ``chunks`` as the answer and reports ``usage``; raises ``error`` if given."""
 

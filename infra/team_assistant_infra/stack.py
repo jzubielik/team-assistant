@@ -492,14 +492,18 @@ class TeamAssistantStack(cdk.Stack):
                 resources=[self.memory.attr_memory_arn],
             )
         )
-        # The search the session manager runs before each model call (bedrock-agentcore 1.26.0,
-        # memory/client.py, retrieve_memories). No IAM condition on the namespace: the role is
-        # shared by every user, so it cannot tell alice from bob; that separation is the actor
-        # id from the verified token (identity.py).
+        # Long-term records (recall.py): the user's preferences and a session's summary are
+        # listed, facts and summaries are searched by the model's memory tool. No IAM
+        # condition on the namespace: the role is shared by every user, so it cannot tell
+        # alice from bob; that separation is the actor id from the verified token
+        # (identity.py).
         role.add_to_principal_policy(
             iam.PolicyStatement(
                 sid="LongTermRecords",
-                actions=["bedrock-agentcore:RetrieveMemoryRecords"],
+                actions=[
+                    "bedrock-agentcore:RetrieveMemoryRecords",
+                    "bedrock-agentcore:ListMemoryRecords",
+                ],
                 resources=[self.memory.attr_memory_arn],
             )
         )

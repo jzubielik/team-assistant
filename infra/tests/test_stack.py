@@ -273,8 +273,11 @@ def test_runtime_role_can_retrieve_records():
         for s in policy["Properties"]["PolicyDocument"]["Statement"]
     }
     records = statements["LongTermRecords"]
-    # Only search: the agent neither lists, reads one by one, nor deletes records.
-    assert records["Action"] == "bedrock-agentcore:RetrieveMemoryRecords"
+    # Search and list: the agent neither reads records one by one nor deletes them.
+    assert sorted(records["Action"]) == [
+        "bedrock-agentcore:ListMemoryRecords",
+        "bedrock-agentcore:RetrieveMemoryRecords",
+    ]
     assert records["Resource"] == {"Fn::GetAtt": ["Memory", "MemoryArn"]}
     assert records["Effect"] == "Allow"
 

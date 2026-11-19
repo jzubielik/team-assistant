@@ -25,8 +25,9 @@ https://github.com/user-attachments/assets/41862dc0-2811-4d38-b5fb-035fe27bb614
   requests that came through this gateway; the same valid token sent straight to the Runtime is
   refused.
 - **Memory that outlives a session.** Each conversation is kept in AgentCore Memory. Three
-  built-in strategies extract preferences, facts and summaries in the background; preferences
-  and facts are retrieved into the prompt of later conversations.
+  built-in strategies extract preferences, facts and summaries in the background. Later
+  conversations start with the user's preferences in the system prompt, and the model looks
+  up facts and earlier conversations with its memory tools.
 - **Acting with the user's own credentials.** The GitHub tools get the user's GitHub token from
   AgentCore Identity after a one-time consent in the browser (OAuth authorization code). The
   user needs no AWS credentials, and the token never reaches the model or the logs.
@@ -105,7 +106,7 @@ make destroy ENV=dev
 | `infra/` | the stack and the CDK bootstrap (AWS CDK, Python) |
 | `scripts/` | the operator's tools: login, chat, users, smoke, measurements |
 | `docker/` | the agent image and the pinned runner image |
-| `config/agent.toml` | model, memory retrieval, tracing |
+| `config/agent.toml` | model, memory, tracing |
 
 | Document | Content |
 |---|---|

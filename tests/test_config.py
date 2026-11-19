@@ -22,11 +22,22 @@ def test_repository_config_loads():
         model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0",
         max_output_tokens=4000,
         event_expiry_days=30,
-        retrieval={
-            "/preferences/{actorId}/": RetrievalSetting(top_k=5, relevance_score=0.2),
-            "/facts/{actorId}/": RetrievalSetting(top_k=5, relevance_score=0.4),
-        },
+        # Preferences are listed into the system prompt; nothing is searched before a model
+        # call (the model has memory tools).
+        retrieval={},
+        max_preferences=20,
     )
+
+
+def test_max_preferences_is_read_and_absent_means_none(tmp_path):
+    assert load_config(write(tmp_path, VALID)).max_preferences == 0
+    assert load_config(write(tmp_path, VALID + "max_preferences = 100\n")).max_preferences == 100
+
+
+@pytest.mark.parametrize("value", ["-1", "101", "5.0", '"5"', "true"])
+def test_wrong_max_preferences_is_refused(tmp_path, value):
+    with pytest.raises(ValueError, match="memory.max_preferences"):
+        load_config(write(tmp_path, VALID + f"max_preferences = {value}\n"))
 
 
 def test_namespaces_start_and_end_with_a_slash():

@@ -6,14 +6,16 @@ A request is one user message, ``{"prompt": ...}``, or the forwarding of a GitHu
 1. check the message (a non-empty ``prompt``);
 2. find out who is asking (identity.py: the ``sub`` claim of the verified token);
 3. open that user's conversation history for this session (memory.py);
-4. run the model with the history and the GitHub tools list_issues and get_issue
-   (github.py), streaming the answer.
+4. list the user's stored preferences for the system prompt (recall.py, prompts.py);
+5. run the model with the history, the GitHub tools list_issues and get_issue (github.py) and
+   the memory tools search_memory and recall_conversations (recall.py), streaming the answer.
 
 Steps 1 and 2 fail before anything is read from memory or sent to the model. So does a session
 id that another user used first in this process (``_other_users_session``). The answer is a
 stream of events (built in events.py), each a JSON object: ``{"type": "text", "data": ...}``
-for a piece of the answer, ``{"type": "auth_url", "url": ..., "state": ...}`` when the user
-must consent in GitHub first, then ``{"type": "done", "usage": {...}}``, or
+for a piece of the answer, ``{"type": "tool", "name": ...}`` when the model calls a tool,
+``{"type": "auth_url", "url": ..., "state": ...}`` when the user must consent in GitHub first,
+then ``{"type": "done", "usage": {...}}``, or
 ``{"type": "error", ...}``.
 A consent request makes no model call (consent.py) and answers ``{"type": "consent_done"}``.
 The web page also asks ``{"conversations": {}}`` and ``{"history": {}}`` (conversations.py): no
@@ -48,18 +50,9 @@ from team_assistant.github import github_tools
 from team_assistant.identity import IdentityError, actor_from_headers, bearer_from_headers
 from team_assistant.logs import configure_stdout
 from team_assistant.memory import session_manager
+from team_assistant.prompts import system_prompt
+from team_assistant.recall import list_preferences, memory_tools
 from team_assistant.titles import title_once
-
-SYSTEM_PROMPT = (
-    "You are the assistant of a software team. Answer briefly and precisely. "
-    "Use what the user told you earlier in this conversation. "
-    "If you do not know something, say so. "
-    "For issues of a public GitHub repository, use the list_issues tool; to read or summarise "
-    "one issue, use get_issue. "
-    # The web page renders Markdown and draws issue lines as rows.
-    "Format answers in Markdown. List each issue on its own line as "
-    "`- **[#<number>](<its address>)** <title>` followed by each of its labels in backticks."
-)
 
 app = BedrockAgentCoreApp()
 log = logging.getLogger("team_assistant")
@@ -122,12 +115,13 @@ def build_agent(
     session_id: str,
     model: Model | None = None,
     tools: list | None = None,
+    preferences: list[str] | None = None,
 ) -> Agent:
     """The Strands agent for one request. Tests pass their own ``model``."""
     return Agent(
         model=model
         or QuietBedrockModel(model_id=config.model_id, max_tokens=config.max_output_tokens),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt(preferences or []),
         session_manager=session_mgr,
         tools=list(tools or []),
         # A long conversation keeps its beginning as a summary: before a model call that would
@@ -150,6 +144,24 @@ def _log(outcome: str, actor: str | None, session: str | None, usage: dict, **ex
 
 def _default_tools(on_auth_url: Callable[[str], None], state: str, return_to: str) -> list:
     return github_tools(on_auth_url, state, return_to)
+
+
+def _default_recall(
+    region: str, memory_id: str, actor: str, session_id: str, limit: int
+) -> tuple[list[str], list]:
+    """The user's preferences for the system prompt and the memory tools of this request.
+
+    A failed listing costs the preferences only, never the answer; the log names the error
+    type (its text can quote a record).
+    """
+    client = _memory_client(region)
+    try:
+        preferences = list_preferences(client, memory_id, actor, limit)
+    except Exception as error:  # noqa: BLE001
+        line = {"event": "preferences_failed", "actor": actor, "session": session_id}
+        log.warning(json.dumps({**line, "error_type": type(error).__name__}))
+        preferences = []
+    return preferences, memory_tools(client, memory_id, actor, session_id)
 
 
 def _store_title(
@@ -253,6 +265,7 @@ async def respond(
     complete: Callable[..., None] = complete_consent,
     make_memory_client: Callable[[str], Any] = _memory_client,
     store_title: Callable[..., None] | None = None,
+    recall: Callable[..., tuple[list[str], list]] | None = None,
 ) -> AsyncIterator[dict]:
     """Handle one request (see the module docstring). The keyword arguments are for tests."""
     if isinstance(payload, dict) and "consent" in payload:
@@ -309,8 +322,13 @@ async def respond(
             loop.call_soon_threadsafe(queue.put_nowait, ("auth_url", url))
 
         tools = (make_tools or partial(_default_tools, return_to=return_to))(on_auth_url, state)
+        preferences, memory = await asyncio.to_thread(
+            recall or _default_recall, region, memory_id, actor, session_id, config.max_preferences
+        )
+        tools = [*tools, *memory]
+        called: set[str] = set()
         with open_session(memory_id, actor, session_id, region, config.retrieval) as session_mgr:
-            agent = build_agent(config, session_mgr, actor, session_id, model, tools)
+            agent = build_agent(config, session_mgr, actor, session_id, model, tools, preferences)
             # The session manager has restored the conversation into the agent: no message
             # means this is the session's first answer, the only one that gets a title. (Asking
             # Memory for a title event instead finds it only after a delay, so each answer would
@@ -334,6 +352,12 @@ async def respond(
                 elif isinstance(event.get("data"), str):
                     answer.append(event["data"])
                     yield events.text(event["data"])
+                elif "current_tool_use" in event:
+                    # One event per tool call: Strands repeats this for every piece of input.
+                    use = event["current_tool_use"]
+                    if use.get("toolUseId") and use["toolUseId"] not in called:
+                        called.add(use["toolUseId"])
+                        yield events.tool(str(use.get("name", "")))
                 elif "result" in event:
                     total = event["result"].metrics.accumulated_usage
                     usage = {

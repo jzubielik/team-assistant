@@ -11,12 +11,15 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "agent.toml"
 EXPIRY_DAYS_MIN, EXPIRY_DAYS_MAX = 7, 365
 _TOP_LEVEL = {"model_id", "max_output_tokens", "memory", "tracing"}
 _TRACING = {"enabled"}
-_MEMORY = {"event_expiry_days", "retrieval"}
+_MEMORY = {"event_expiry_days", "max_preferences", "retrieval"}
+# Upper limit of memory.max_preferences: each record is a line of the system prompt.
+MAX_PREFERENCES = 100
 _RETRIEVAL = {"top_k", "relevance_score"}
 # Limits of RetrievalConfig in bedrock-agentcore 1.26.0
 # (memory/integrations/strands/config.py): top_k > 0 and <= 1000, relevance_score 0.0 to 1.0.
 TOP_K_MAX = 1000
-# Stored for the operator, never put into the prompt.
+# A summary's namespace holds a session id, and the search before a model call fills in the
+# running session, which has no summary yet. The model reads summaries with its memory tools.
 NOT_RETRIEVED = {"summaries"}
 
 # Where each long-term strategy stores its records, keyed by strategy name. It lives here, not
@@ -73,6 +76,8 @@ class AgentConfig:
     retrieval: dict[str, RetrievalSetting] = field(default_factory=dict)
     # Whether the agent exports spans (stack.py turns this into the Runtime's environment).
     tracing: bool = False
+    # How many of the user's newest preference records go into the system prompt; 0: none.
+    max_preferences: int = 0
 
 
 def _retrieval(blocks: dict) -> dict[str, RetrievalSetting]:
@@ -121,4 +126,8 @@ def load_config(path: Path = DEFAULT_PATH) -> AgentConfig:
     tracing = data["tracing"].get("enabled") if "tracing" in data else False
     if type(tracing) is not bool:
         raise ValueError("tracing.enabled must be true or false")
-    return AgentConfig(model_id, max_output_tokens, expiry, retrieval, tracing)
+    # No max_preferences means none, as no retrieval block means no retrieval.
+    preferences = memory.get("max_preferences", 0)
+    if type(preferences) is not int or not 0 <= preferences <= MAX_PREFERENCES:
+        raise ValueError(f"memory.max_preferences must be an integer from 0 to {MAX_PREFERENCES}")
+    return AgentConfig(model_id, max_output_tokens, expiry, retrieval, tracing, preferences)

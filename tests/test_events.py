@@ -59,6 +59,7 @@ def test_constructors_build_exactly_their_fields():
     built = [
         events.text("a"),
         events.auth_url("u", "s"),
+        events.tool("search_memory"),
         events.done(1, 2),
         events.error("m"),
         events.consent_done(),

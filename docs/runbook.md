@@ -206,9 +206,10 @@ bootstraps of the account (`CDKToolkit`, other projects' qualifiers) are not tou
   Run `make smoke` again (it deletes its own marked records first). Records without the `smk`
   marker must be deleted by hand (`aws bedrock-agentcore delete-memory-record`).
 - **The agent answers without what it should remember**: look in the Runtime's log for a
-  `library_log` line with `Retrieved %d memories from namespace: %s` or
-  `Memory retrieval failed (%s): %s` (values are dropped, `src/team_assistant/logs.py`);
-  then `make memory ... USER=<name> SESSION=<id>` shows whether the records exist.
+  line with `"event": "preferences_failed"` or `"event": "tool_failed"` (each names the error
+  type); then `make memory ... USER=<name> SESSION=<id>` shows whether the records exist. A
+  fact or an earlier conversation reaches the answer only when the model calls
+  `search_memory` or `recall_conversations`; `make measure` reports which tools it called.
 - **`GITHUB_CLIENT_ID_<env> is not set`**: add the OAuth App's client id to `local.mk`.
 - **`WARNING ExplicitAuthFlows.1: 'ALLOW_TOKEN_EXCHANGE_IMPERSONATION' is not one of [...]`**
   at synth or deploy: CDK's validation predates Cognito's token exchange; the service accepts the

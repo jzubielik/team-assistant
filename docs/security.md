@@ -47,7 +47,8 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 | `bedrock-agentcore:ListEvents` | this environment's Memory | load the conversation; read a conversation's history and title for the web page |
 | `bedrock-agentcore:ListSessions` | this environment's Memory | list the asking user's conversations for the web page (the actor comes from the token) |
 | `bedrock-agentcore:DeleteEvent` | this environment's Memory | the session manager replaces stored agent state |
-| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | search the user's preferences and facts before each model call |
+| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | the model's memory tools search the user's facts, or the summaries of the user's conversations by topic |
+| `bedrock-agentcore:ListMemoryRecords` | this environment's Memory | list the user's preferences for the system prompt, and a past conversation's summary |
 | `bedrock-agentcore:GetResourceOauth2Token` | the default token vault, this environment's GitHub provider, this Runtime's workload identity | get the asking user's GitHub token, or a consent URL |
 | `bedrock-agentcore:CompleteResourceTokenAuth` | the same | bind a user's consent to the user named by the request's token |
 | `secretsmanager:GetSecretValue` | this environment's GitHub client secret | AgentCore reads the OAuth App's secret with the caller's credentials |
@@ -123,7 +124,9 @@ grant it.
   the client checks the `state` the agent sent, so a return from another consent is not
   forwarded. Only the agent's role holds `CompleteResourceTokenAuth`.
 - **The token never reaches the model**: the tools' schemas have only `repository` and
-  `state` (`list_issues`) or `repository` and `number` (`get_issue`).
+  `state` (`list_issues`) or `repository` and `number` (`get_issue`). The memory tools take
+  only `query` (`search_memory`) or `days` and `topic` (`recall_conversations`): the user is the token's,
+  and the model cannot name another one.
   It is not logged, not streamed and not written outside the vault.
 - **Scope**: the OAuth App requests no scope, so the token reads public data only.
 - **The OAuth App's client secret** is in Secrets Manager; the deploy role can read it (AgentCore
@@ -203,11 +206,13 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
   condition keys for the actor (`bedrock-agentcore:actorId`) and, on `RetrieveMemoryRecords`,
   for the namespace (`bedrock-agentcore:namespace`, `bedrock-agentcore:namespacePath`), but one
   role serves all users, so none of them can be bound to the caller here.
-- A failed long-term search does not stop the answer: `MemoryClient.retrieve_memories`
-  (bedrock-agentcore 1.26.0) logs `Memory retrieval failed (%s): %s` and the agent answers
-  without the user's records. The line reaches the Runtime's log without its values
-  (`src/team_assistant/logs.py`); no alarm watches it
-  (the project has no alarms).
+- A failed read of long-term memory does not stop the answer: without the listed preferences
+  the agent answers without them (log line `preferences_failed`), and a memory tool that
+  fails tells the model so (log line `tool_failed`). Both lines name the error type only; no
+  alarm watches them (the project has no alarms).
+- Long-term records are text extracted from the user's own earlier messages. The preferences
+  among them enter the system prompt of that user's later requests, so a user can shape the
+  instructions of their own conversations, not of anyone else's.
 - The model is reachable through any region the global inference profile routes to.
 - The Runtime's log groups are created by the service without a retention period; `make destroy`
   deletes them (logs are kept until then, no longer and no shorter).
@@ -226,6 +231,10 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
   prevent such script.
 - An issue's text can try to instruct the model; it is marked as data, which lowers but does
   not remove that risk. The tools only read public repositories.
+- What the assistant writes, about an issue or as its own suggestion, becomes part of that
+  conversation's summary. Summaries are returned only by `recall_conversations`, for questions
+  about earlier conversations, marked as data and as the assistant's past suggestions; the
+  fact search never reads them. The text stays within that user's records.
 - The token vault is one per account and region, shared by every environment in the account;
   separate vaults need separate accounts. It uses the AWS owned key (no customer managed key in
   this project).
