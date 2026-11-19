@@ -445,6 +445,16 @@ class TeamAssistantStack(cdk.Stack):
         )
         # The deploy permissions allow roles only under this path (docs/adr/0001).
         runtime.role.node.default_child.path = ROLE_PATH
+        # The construct trusts runtime/<name>*, which also matches a Runtime whose name only
+        # starts with this one. A Runtime id is <name>-<10 characters>.
+        runtime.role.node.default_child.add_property_override(
+            "AssumeRolePolicyDocument.Statement.0.Condition.ArnLike.aws:SourceArn",
+            cdk.Stack.of(self).format_arn(
+                service="bedrock-agentcore",
+                resource=f"runtime/{self.names.runtime}-*",
+                arn_format=cdk.ArnFormat.NO_RESOURCE_NAME,
+            ),
+        )
         self._grant_agent(runtime.role)
         cdk.CfnOutput(self, "RuntimeArn", value=runtime.agent_runtime_arn)
         return runtime

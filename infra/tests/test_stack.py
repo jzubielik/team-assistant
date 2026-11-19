@@ -216,7 +216,7 @@ def test_both_roles_are_under_the_project_path_with_the_boundary_and_a_narrow_tr
         assert set(trust["Condition"]) == {"StringEquals", "ArnLike"}
         sources.append(str(trust["Condition"]["ArnLike"]))
     runtime, gateway = sorted(sources, key=lambda source: "gateway/" in source)
-    assert "runtime/team_assistant_dev_runtime*" in runtime
+    assert ":runtime/team_assistant_dev_runtime-*" in runtime
     assert ":gateway/team-assistant-dev-gateway-*" in gateway
     assert len(sources) == 2
 

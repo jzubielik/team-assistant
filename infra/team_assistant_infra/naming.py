@@ -84,6 +84,13 @@ def validate_env(env: str) -> str:
             f"invalid ENV '{env}': lowercase letters and digits with single inner hyphens, "
             f"starting with a letter, at most {_ENV_MAX} characters (e.g. dev, qa-2)"
         )
+    # Permissions name a gateway as team-assistant-<env>-gateway-*. The gateway of an
+    # environment "<env>-gateway-x" would match that pattern of environment "<env>".
+    if "gateway" in env.split("-"):
+        raise ValueError(
+            f"invalid ENV '{env}': no part of the name may be 'gateway' (the name would "
+            "match another environment's gateway permissions)"
+        )
     return env
 
 
