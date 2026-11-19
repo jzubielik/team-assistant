@@ -260,5 +260,5 @@ leaks: ## Scan every commit with gitleaks (.gitleaks.toml) and trufflehog (verif
 lint: ## Lint workflows (actionlint, zizmor), Dockerfiles (hadolint) and shell scripts (shellcheck); part of make check
 	@$(RUN) echo "==> lint: actionlint, zizmor, hadolint, shellcheck" && NATIVE=1 scripts/scan.sh lint
 
-audit: ## pip-audit the locked Python dependencies (network: advisory database)
-	@$(RUN) echo "==> audit: pip-audit on the lock files" && NATIVE=1 scripts/scan.sh audit
+audit: ## pip-audit and npm audit of the locked Python and npm dependencies (network: advisory databases)
+	@$(RUN) echo "==> audit: pip-audit and npm audit on the lock files" && NATIVE=1 scripts/scan.sh audit
