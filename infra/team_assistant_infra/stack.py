@@ -234,6 +234,7 @@ class TeamAssistantStack(cdk.Stack):
                 resources=[self.exchange_secret.secret_arn],
             )
         )
+        self._deny_user_id_access(self.gateway_role)
         runtime_arn = self.runtime.agent_runtime_arn
         # Invoking this one Runtime (and its endpoints) is all the gateway's role may do.
         self.gateway_role.add_to_principal_policy(
@@ -509,6 +510,54 @@ class TeamAssistantStack(cdk.Stack):
             )
         )
         self._github_permissions(role)
+        self._deny_user_id_access(role)
+        # The Runtime construct allows the token actions on every workload identity of the
+        # account, and the boundary (one for both roles) allows the gateway's identity. The
+        # agent acts only as itself. The actions are authorized on the directory and on the
+        # identity, so both are excepted.
+        stack = cdk.Stack.of(self)
+        directory = "workload-identity-directory/default"
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="DenyOtherWorkloadIdentities",
+                effect=iam.Effect.DENY,
+                actions=[
+                    "bedrock-agentcore:GetWorkloadAccessToken",
+                    "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+                ],
+                not_resources=[
+                    stack.format_arn(
+                        service="bedrock-agentcore",
+                        resource=resource,
+                        arn_format=cdk.ArnFormat.NO_RESOURCE_NAME,
+                    )
+                    for resource in (
+                        directory,
+                        f"{directory}/workload-identity/{self.names.runtime}-*",
+                    )
+                ],
+            )
+        )
+
+    def _deny_user_id_access(self, role: iam.IRole) -> None:
+        """Deny the two actions that name a user by a plain id instead of a verified token.
+
+        Every request here carries a user's token, so nothing needs them, and with them a
+        caller could act for any user id it chooses (AgentCore developer guide,
+        runtime-security-best-practices). An explicit Deny holds even if an Allow is added
+        later; the Runtime construct allows GetWorkloadAccessTokenForUserId by default.
+        """
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="DenyUserIdAccess",
+                effect=iam.Effect.DENY,
+                actions=[
+                    "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+                    "bedrock-agentcore:InvokeAgentRuntimeForUser",
+                ],
+                resources=["*"],
+            )
+        )
 
     def _github_permissions(self, role: iam.IRole) -> None:
         """What the agent needs to get a user's GitHub token and to complete a user's consent.

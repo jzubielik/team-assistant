@@ -60,7 +60,7 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 | `ecr:GetAuthorizationToken` | `*` | log in to the registry; the action has no resource |
 | `bedrock-agentcore:GetWorkloadAccessToken` | the Runtime's workload identity | added by the Runtime construct; used by outbound credentials |
 | `bedrock-agentcore:GetWorkloadAccessTokenForJWT` | the Runtime's workload identity | the same |
-| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | the Runtime's workload identity | the same |
+| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | the Runtime's workload identity | added by the Runtime construct; denied below |
 | `xray:PutTraceSegments` | `*` | added by the Runtime construct; the agent's spans |
 | `xray:PutTelemetryRecords` | `*` | the same |
 | `xray:GetSamplingRules` | `*` | the same |
@@ -69,6 +69,15 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 
 Statements on `*` are those whose action supports no resource (registry login, X-Ray, metrics).
 The boundary narrows the log permissions to this environment's Runtime.
+
+Explicitly denied, whatever an Allow says:
+
+| Action | Resource | Why |
+|---|---|---|
+| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | `*` | names a user by a plain id, not by a verified token; every request here carries a token |
+| `bedrock-agentcore:InvokeAgentRuntimeForUser` | `*` | the same |
+| `bedrock-agentcore:GetWorkloadAccessToken` | every workload identity but this Runtime's | the construct allows all identities of the account; the agent acts only as itself |
+| `bedrock-agentcore:GetWorkloadAccessTokenForJWT` | the same | the same |
 
 ## Gateway role
 
@@ -83,6 +92,13 @@ service, this account, a gateway named `team-assistant-<env>-gateway`).
 | `bedrock-agentcore:GetWorkloadAccessTokenForJWT` | the same | the same, for the user named by the caller's token |
 | `bedrock-agentcore:GetResourceOauth2Token` | the default token vault, this environment's exchange provider, the gateway's workload identity | exchange the caller's token for the one sent to the Runtime |
 | `secretsmanager:GetSecretValue` | the exchange provider's placeholder secret | AgentCore reads the provider's client secret with the caller's credentials; the value is a generated placeholder that Cognito ignores |
+
+Explicitly denied, whatever an Allow says:
+
+| Action | Resource | Why |
+|---|---|---|
+| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | `*` | names a user by a plain id, not by a verified token; the gateway always has the caller's token |
+| `bedrock-agentcore:InvokeAgentRuntimeForUser` | `*` | the same |
 
 The gateway exchanges the caller's token at the user pool and sends the issued token to the
 Runtime, which verifies it again. The role holds `InvokeAgentRuntime`, as the official samples

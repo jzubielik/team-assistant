@@ -350,6 +350,7 @@ def test_boundary_covers_every_action_of_the_stacks_role():
         for resource in template["Resources"].values()
         if resource["Type"] == "AWS::IAM::Policy"
         for statement in resource["Properties"]["PolicyDocument"]["Statement"]
+        if statement["Effect"] == "Allow"
         for action in as_list(statement["Action"])
     }
     allowed = {a for s in BOUNDARY_ALLOWS for a in as_list(s["Action"])}

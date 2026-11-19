@@ -301,6 +301,45 @@ def test_runtime_role_can_get_and_complete_github_tokens_of_this_provider_only()
     assert secret["Resource"] == {"Ref": _secret_id("github")}
 
 
+def _denies(role_prefix: str) -> dict[str, dict]:
+    (role_id,) = [k for k in _ids("AWS::IAM::Role") if k.startswith(role_prefix)]
+    return {
+        s["Sid"]: s
+        for r in resources(TEMPLATE, "AWS::IAM::Policy")
+        if r["Properties"]["Roles"] == [{"Ref": role_id}]
+        for s in r["Properties"]["PolicyDocument"]["Statement"]
+        if s["Effect"] == "Deny"
+    }
+
+
+@pytest.mark.parametrize("role_prefix", ["RuntimeExecutionRole", "GatewayRole"])
+def test_both_roles_are_denied_the_actions_that_name_a_user_by_a_plain_id(role_prefix):
+    deny = _denies(role_prefix)["DenyUserIdAccess"]
+    assert sorted(deny["Action"]) == [
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+        "bedrock-agentcore:InvokeAgentRuntimeForUser",
+    ]
+    assert deny["Resource"] == "*" and "Condition" not in deny
+
+
+def test_runtime_role_gets_workload_tokens_for_its_own_identity_only():
+    # The construct's Allow names every workload identity of the account.
+    denies = _denies("RuntimeExecutionRole")
+    assert set(denies) == {"DenyUserIdAccess", "DenyOtherWorkloadIdentities"}
+    deny = denies["DenyOtherWorkloadIdentities"]
+    assert sorted(deny["Action"]) == [
+        "bedrock-agentcore:GetWorkloadAccessToken",
+        "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+    ]
+    assert "Resource" not in deny and "Condition" not in deny
+    excepted = sorted(str(r).split("bedrock-agentcore:")[1] for r in deny["NotResource"])
+    assert [e.split(":", 2)[2].rstrip("'\"]}") for e in excepted] == [
+        "workload-identity-directory/default",
+        "workload-identity-directory/default/workload-identity/team_assistant_dev_runtime-*",
+    ]
+    assert set(_denies("GatewayRole")) == {"DenyUserIdAccess"}
+
+
 def test_memory_strategies_and_namespaces():
     (memory,) = resources(TEMPLATE, "AWS::BedrockAgentCore::Memory")
     properties = memory["Properties"]
@@ -530,7 +569,12 @@ def test_gateway_role_can_invoke_this_runtime_and_exchange_tokens_and_nothing_el
         s["Sid"]: s
         for s in TEMPLATE["Resources"][policy_id]["Properties"]["PolicyDocument"]["Statement"]
     }
-    assert set(statements) == {"InvokeThisRuntime", "ExchangeUserTokens", "ExchangeSecret"}
+    assert set(statements) == {
+        "InvokeThisRuntime",
+        "ExchangeUserTokens",
+        "ExchangeSecret",
+        "DenyUserIdAccess",
+    }
     assert statements["ExchangeSecret"]["Action"] == "secretsmanager:GetSecretValue"
     assert statements["ExchangeSecret"]["Resource"] == {"Ref": _secret_id("exchange")}
     invoke = statements["InvokeThisRuntime"]
