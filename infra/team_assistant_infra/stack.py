@@ -527,8 +527,9 @@ class TeamAssistantStack(cdk.Stack):
         self._deny_user_id_access(role)
         # The Runtime construct allows the token actions on every workload identity of the
         # account, and the boundary (one for both roles) allows the gateway's identity. The
-        # agent acts only as itself. The actions are authorized on the directory and on the
-        # identity, so both are excepted.
+        # agent needs a token only for its own identity, so every other identity is denied.
+        # AgentCore checks these actions against two resources, the identity directory and
+        # the identity itself; the Deny leaves out both for the agent's own identity.
         stack = cdk.Stack.of(self)
         directory = "workload-identity-directory/default"
         role.add_to_principal_policy(

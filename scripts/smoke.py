@@ -218,7 +218,8 @@ def check_conversations_isolation(read: Read, user_a: str, user_b: str, session:
     session of their own under that id. The first user's other sessions have random ids
     (check "new session"), which the other user cannot have."""
     lists = {}
-    # The other user first: they used the smoke session id last (one stop less).
+    # The other user is asked first. They used the smoke session id last, so the running
+    # session is still theirs and need not be stopped before the read.
     for user in (user_b, user_a):
         event = read(user, session, {"conversations": {}})
         if event.get("type") != "conversations":

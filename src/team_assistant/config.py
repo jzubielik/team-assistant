@@ -18,8 +18,9 @@ _RETRIEVAL = {"top_k", "relevance_score"}
 # Limits of RetrievalConfig in bedrock-agentcore 1.26.0
 # (memory/integrations/strands/config.py): top_k > 0 and <= 1000, relevance_score 0.0 to 1.0.
 TOP_K_MAX = 1000
-# A summary's namespace holds a session id, and the search before a model call fills in the
-# running session, which has no summary yet. The model reads summaries with its memory tools.
+# Summaries cannot be searched before a model call: their namespace contains a session id,
+# and that search always uses the id of the running session, which has no summary yet. The
+# model reads summaries with its memory tools.
 NOT_RETRIEVED = {"summaries"}
 
 # Where each long-term strategy stores its records, keyed by strategy name. It lives here, not

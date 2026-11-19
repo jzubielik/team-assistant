@@ -90,9 +90,10 @@ def _records(client, memory_id: str, namespace: str) -> list[dict]:
 
 
 def list_preferences(client, memory_id: str, actor: str, limit: int) -> list[str]:
-    """The actor's newest ``limit`` preferences, oldest of them first, without repeats.
+    """The actor's ``limit`` most recently stored preferences, in the order they were stored.
 
-    At most conversations.MAX_PAGES pages of 100 records are read.
+    A text that appears twice is returned once. At most conversations.MAX_PAGES pages of 100
+    records are read.
     """
     if limit <= 0:
         return []
@@ -103,8 +104,10 @@ def list_preferences(client, memory_id: str, actor: str, limit: int) -> list[str
 
 
 def _failed(tool_name: str, error: Exception) -> str:
-    # As in github.py: a returned text is redacted in a span, an exception is not; the text
-    # and the log line name the error type only.
+    # A tool reports a failure by returning a text, not by raising (as in github.py). With
+    # tracing on, an exception's text is written to the tool's span as it is, while a
+    # returned text is redacted. The text and the log line name only the error's type,
+    # because its message can quote a record.
     log.warning(
         json.dumps({"event": "tool_failed", "tool": tool_name, "error_type": type(error).__name__})
     )

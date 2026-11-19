@@ -67,9 +67,10 @@ def _other_users_session(session_id: str | None, actor: str) -> bool:
 
     AgentCore Runtime sends every request with one session id to the same microVM, whoever
     the user is, and leaves the mapping of sessions to users to the agent (developer guide,
-    runtime-sessions). Memory is kept per user, so a second user would read nothing of the
-    first; refusing them keeps one microVM, with its process and its role credentials, to one
-    user. The Runtime runs one session per microVM, so this holds one entry there.
+    runtime-sessions). Without this check two users who send the same session id would share
+    one microVM: the same process and the same role credentials. Memory would still be
+    separate, because it is keyed by user. The Runtime runs one session per microVM, so in a
+    deployment the dictionary has one entry.
     """
     return bool(session_id) and _SESSION_USERS.setdefault(session_id, actor) != actor
 
@@ -151,8 +152,8 @@ def _default_recall(
 ) -> tuple[list[str], list]:
     """The user's preferences for the system prompt and the memory tools of this request.
 
-    A failed listing costs the preferences only, never the answer; the log names the error
-    type (its text can quote a record).
+    If the listing fails, the request is answered without preferences; the log names the
+    error's type only (its message can quote a record).
     """
     client = _memory_client(region)
     try:

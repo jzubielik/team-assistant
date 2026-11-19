@@ -34,7 +34,8 @@ import smoke  # noqa: E402
 
 from team_assistant.config import NAMESPACES, RetrievalSetting, load_config  # noqa: E402
 
-# The search shown beside each follow-up when config/agent.toml sets no retrieval.
+# How many records per namespace the report's comparison search returns, when
+# config/agent.toml has no [memory.retrieval.*] block.
 TOP_K = 5
 
 DEFAULT_PATH = Path(__file__).resolve().parent / "conversations.toml"

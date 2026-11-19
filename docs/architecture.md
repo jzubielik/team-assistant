@@ -77,7 +77,7 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
    question about earlier conversations, `recall_conversations`: those of the last days
    (`ListSessions`, then each one's title and summary) or the summaries closest to a topic.
    A summary repeats what the assistant answered, so summaries are never returned as facts.
-   A failed read costs the records, not the answer.
+   If a read fails, the request is answered without those records.
 6. The Strands agent sends the history and the new message to the model and streams the answer
    back as server-sent events; the session manager stores both messages as events. Before a
    model call that would fill 70 % of the model's context window, the agent first replaces
