@@ -5,6 +5,12 @@ from __future__ import annotations
 import re
 
 import aws_cdk as cdk
+
+# Imported for its side effect: jsii registers ArtifactManifest as a data type only when this
+# submodule is loaded, and reading `artifact.manifest` fails with "Unknown interface" when it
+# is not. aws-cdk-lib loads its submodules lazily, so without this line the load depends on
+# what the synthesis happened to touch first.
+import aws_cdk.cloud_assembly_schema  # noqa: F401
 import pytest
 from team_assistant_infra.stack import build_app
 
@@ -216,7 +222,7 @@ def test_both_roles_are_under_the_project_path_with_the_boundary_and_a_narrow_tr
         assert set(trust["Condition"]) == {"StringEquals", "ArnLike"}
         sources.append(str(trust["Condition"]["ArnLike"]))
     runtime, gateway = sorted(sources, key=lambda source: "gateway/" in source)
-    assert "runtime/team_assistant_dev_runtime*" in runtime
+    assert ":runtime/team_assistant_dev_runtime-*" in runtime
     assert ":gateway/team-assistant-dev-gateway-*" in gateway
     assert len(sources) == 2
 
@@ -273,8 +279,11 @@ def test_runtime_role_can_retrieve_records():
         for s in policy["Properties"]["PolicyDocument"]["Statement"]
     }
     records = statements["LongTermRecords"]
-    # Only search: the agent neither lists, reads one by one, nor deletes records.
-    assert records["Action"] == "bedrock-agentcore:RetrieveMemoryRecords"
+    # Search and list: the agent neither reads records one by one nor deletes them.
+    assert sorted(records["Action"]) == [
+        "bedrock-agentcore:ListMemoryRecords",
+        "bedrock-agentcore:RetrieveMemoryRecords",
+    ]
     assert records["Resource"] == {"Fn::GetAtt": ["Memory", "MemoryArn"]}
     assert records["Effect"] == "Allow"
 
@@ -299,6 +308,45 @@ def test_runtime_role_can_get_and_complete_github_tokens_of_this_provider_only()
     secret = statements["GithubClientSecret"]
     assert secret["Action"] == "secretsmanager:GetSecretValue"
     assert secret["Resource"] == {"Ref": _secret_id("github")}
+
+
+def _denies(role_prefix: str) -> dict[str, dict]:
+    (role_id,) = [k for k in _ids("AWS::IAM::Role") if k.startswith(role_prefix)]
+    return {
+        s["Sid"]: s
+        for r in resources(TEMPLATE, "AWS::IAM::Policy")
+        if r["Properties"]["Roles"] == [{"Ref": role_id}]
+        for s in r["Properties"]["PolicyDocument"]["Statement"]
+        if s["Effect"] == "Deny"
+    }
+
+
+@pytest.mark.parametrize("role_prefix", ["RuntimeExecutionRole", "GatewayRole"])
+def test_both_roles_are_denied_the_actions_that_name_a_user_by_a_plain_id(role_prefix):
+    deny = _denies(role_prefix)["DenyUserIdAccess"]
+    assert sorted(deny["Action"]) == [
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+        "bedrock-agentcore:InvokeAgentRuntimeForUser",
+    ]
+    assert deny["Resource"] == "*" and "Condition" not in deny
+
+
+def test_runtime_role_gets_workload_tokens_for_its_own_identity_only():
+    # The construct's Allow names every workload identity of the account.
+    denies = _denies("RuntimeExecutionRole")
+    assert set(denies) == {"DenyUserIdAccess", "DenyOtherWorkloadIdentities"}
+    deny = denies["DenyOtherWorkloadIdentities"]
+    assert sorted(deny["Action"]) == [
+        "bedrock-agentcore:GetWorkloadAccessToken",
+        "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+    ]
+    assert "Resource" not in deny and "Condition" not in deny
+    excepted = sorted(str(r).split("bedrock-agentcore:")[1] for r in deny["NotResource"])
+    assert [e.split(":", 2)[2].rstrip("'\"]}") for e in excepted] == [
+        "workload-identity-directory/default",
+        "workload-identity-directory/default/workload-identity/team_assistant_dev_runtime-*",
+    ]
+    assert set(_denies("GatewayRole")) == {"DenyUserIdAccess"}
 
 
 def test_memory_strategies_and_namespaces():
@@ -530,7 +578,12 @@ def test_gateway_role_can_invoke_this_runtime_and_exchange_tokens_and_nothing_el
         s["Sid"]: s
         for s in TEMPLATE["Resources"][policy_id]["Properties"]["PolicyDocument"]["Statement"]
     }
-    assert set(statements) == {"InvokeThisRuntime", "ExchangeUserTokens", "ExchangeSecret"}
+    assert set(statements) == {
+        "InvokeThisRuntime",
+        "ExchangeUserTokens",
+        "ExchangeSecret",
+        "DenyUserIdAccess",
+    }
     assert statements["ExchangeSecret"]["Action"] == "secretsmanager:GetSecretValue"
     assert statements["ExchangeSecret"]["Resource"] == {"Ref": _secret_id("exchange")}
     invoke = statements["InvokeThisRuntime"]

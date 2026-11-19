@@ -38,7 +38,9 @@ The agent's modules:
 | Module | Role |
 |---|---|
 | `identity.py` | user id = the `sub` claim of the token |
-| `memory.py` | history of (user id, session id); long-term records into the prompt |
+| `memory.py` | history of (user id, session id) |
+| `recall.py` | the user's preferences for the system prompt; tools `search_memory`, `recall_conversations` |
+| `prompts.py` | the system prompt: fixed instructions, then the user's preferences |
 | `app.py` | model call, streamed answer |
 | `github.py` | tools `list_issues`, `get_issue`, with the user's GitHub token |
 | `consent.py` | completes a GitHub consent |
@@ -64,16 +66,26 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
    client and the audience (the token must have been issued for this environment's agent).
    A request without a valid token is refused with 401 at the gateway or here.
 3. The Runtime routes the request to the container of that session, starting one if needed.
-4. `app.py` checks the prompt, reads the user id from the token (`identity.py`) and opens the
-   history for (user id, session id) in AgentCore Memory (`memory.py`).
-5. The session manager searches the user's preference and fact namespaces with the new message
-   (`RetrieveMemoryRecords`, limits from `[memory.retrieval.*]` in `config/agent.toml`) and
-   prepends what it finds to that message inside `<user_context>`. A failed search is logged as
-   a WARNING and the answer goes on without those records.
+4. `app.py` checks the prompt, reads the user id from the token (`identity.py`), refuses a
+   session id that another user used first in this container, and opens the history for
+   (user id, session id) in AgentCore Memory (`memory.py`).
+5. `recall.py` lists the user's newest preference records (`ListMemoryRecords`, at most
+   `max_preferences` from `config/agent.toml`); they go into the system prompt after the fixed
+   instructions, so the start of a user's requests stays the same from turn to turn. Facts and
+   summaries are not put into the prompt: the model calls `search_memory` with a query it
+   writes from the conversation (`RetrieveMemoryRecords` over the user's facts), or, for a
+   question about earlier conversations, `recall_conversations`: those of the last days
+   (`ListSessions`, then each one's title and summary) or the summaries closest to a topic.
+   A summary repeats what the assistant answered, so summaries are never returned as facts.
+   If a read fails, the request is answered without those records.
 6. The Strands agent sends the history and the new message to the model and streams the answer
-   back as server-sent events; the session manager stores both messages as events.
+   back as server-sent events; the session manager stores both messages as events. Before a
+   model call that would fill 70 % of the model's context window, the agent first replaces
+   the oldest messages by a summary the same model writes (one more model call); the summary
+   is stored with the agent's state and restored with the session. The stored events, and so
+   the history the web page shows, stay complete.
 7. About a minute later, outside the request, the three strategies extract long-term records
-   from the new events. Summaries are kept for the operator (`make memory`), never retrieved.
+   from the new events.
 8. One log line records the user id, the session id and the token counts; never the content.
 
 ## GitHub consent, the first time a user asks for issues

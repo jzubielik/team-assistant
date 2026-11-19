@@ -73,7 +73,7 @@ Resources:
             Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/${MemoryName}-*
           - Sid: LongTermRecords
             Effect: Allow
-            Action: bedrock-agentcore:RetrieveMemoryRecords
+            Action: [bedrock-agentcore:RetrieveMemoryRecords, bedrock-agentcore:ListMemoryRecords]
             Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/${MemoryName}-*
           - Sid: WorkloadIdentityTokens
             Effect: Allow

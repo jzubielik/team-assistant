@@ -13,6 +13,23 @@ from strands.models import Model
 from strands.session.session_manager import SessionManager
 
 
+@pytest.fixture(autouse=True)
+def _no_sessions_from_other_tests():
+    """Each test starts as a new process would: no session id belongs to a user yet."""
+    from team_assistant import app
+
+    app._SESSION_USERS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_long_term_memory(monkeypatch):
+    """No stored preferences and no memory tools unless a test passes its own ``recall``:
+    the real one builds an AWS client."""
+    from team_assistant import app
+
+    monkeypatch.setattr(app, "_default_recall", lambda *args: ([], []))
+
+
 class FakeModel(Model):
     """Streams ``chunks`` as the answer and reports ``usage``; raises ``error`` if given."""
 
@@ -24,7 +41,8 @@ class FakeModel(Model):
         pass
 
     def get_config(self):
-        return {"model_id": "fake"}
+        # With a known window, Strands does not warn that it has to assume one.
+        return {"model_id": "fake", "context_window_limit": 200_000}
 
     async def structured_output(self, output_model, prompt, system_prompt=None, **kwargs):
         raise NotImplementedError

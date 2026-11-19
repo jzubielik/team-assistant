@@ -12,6 +12,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 # IAM roles can be created only under the path /team-assistant/ and only with a permissions
 # boundary named TeamAssistantCdkPermissionsBoundary-<env> (infra/bootstrap/boundary.yaml).
 #
+# Tag actions: tags come from the stack (project, env). Each resource type's CloudFormation
+# schema lists TagResource in its create and update handlers and UntagResource in update, so
+# every statement that manages a taggable resource holds them, scoped like the rest of it.
+#
 # Managed policies are account-wide (IAM is global), so region parts of ARNs are wildcards.
 # Names: infra/team_assistant_infra/naming.py; infra/tests/test_bootstrap.py keeps both in step.
 Description: team-assistant least-privilege CDK execution policy
@@ -26,9 +30,10 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Sid: BootstrapVersion
-            # CloudFormation reads the BootstrapVersion parameter of every CDK stack with this role.
+            # CloudFormation reads the BootstrapVersion parameter of every CDK stack with this
+            # role, with GetParameters.
             Effect: Allow
-            Action: [ssm:GetParameter, ssm:GetParameters]
+            Action: ssm:GetParameters
             Resource: !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/cdk-bootstrap/teamasst/version
           - Sid: UserPoolCreate
             # CreateUserPool has no resource to name (the pool does not exist yet); the request
@@ -129,8 +134,7 @@ Resources:
           - Sid: Runtime
             Effect: Allow
             Action: [bedrock-agentcore:UpdateAgentRuntime, bedrock-agentcore:DeleteAgentRuntime,
-                     bedrock-agentcore:GetAgentRuntime, bedrock-agentcore:ListAgentRuntimeVersions,
-                     bedrock-agentcore:ListAgentRuntimeEndpoints, bedrock-agentcore:GetAgentRuntimeEndpoint,
+                     bedrock-agentcore:GetAgentRuntime, bedrock-agentcore:GetAgentRuntimeEndpoint,
                      bedrock-agentcore:CreateAgentRuntimeEndpoint, bedrock-agentcore:UpdateAgentRuntimeEndpoint,
                      bedrock-agentcore:DeleteAgentRuntimeEndpoint, bedrock-agentcore:TagResource,
                      bedrock-agentcore:UntagResource, bedrock-agentcore:ListTagsForResource]
@@ -149,8 +153,7 @@ Resources:
             # The service creates a workload identity named after the Runtime; the calls are
             # authorized on the account's one directory and on the identity.
             Effect: Allow
-            Action: [bedrock-agentcore:CreateWorkloadIdentity, bedrock-agentcore:GetWorkloadIdentity,
-                     bedrock-agentcore:UpdateWorkloadIdentity, bedrock-agentcore:DeleteWorkloadIdentity,
+            Action: [bedrock-agentcore:CreateWorkloadIdentity, bedrock-agentcore:DeleteWorkloadIdentity,
                      bedrock-agentcore:TagResource, bedrock-agentcore:UntagResource,
                      bedrock-agentcore:ListTagsForResource]
             Resource:
@@ -200,7 +203,7 @@ Resources:
             Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/team-assistant/*
           - Sid: AppRolesRead
             Effect: Allow
-            Action: [iam:GetRole, iam:GetRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:ListRoleTags]
+            Action: [iam:GetRole, iam:GetRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies]
             Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/team-assistant/*
           - Sid: PassAppRoles
             Effect: Allow
@@ -308,19 +311,38 @@ Resources:
                      s3:GetReplicationConfiguration,
                      s3:PutBucketPolicy, s3:GetBucketPolicy, s3:DeleteBucketPolicy]
             Resource: !Sub arn:${AWS::Partition}:s3:::ta-*-web-*
-          - Sid: WebDistribution
-            # A distribution's id does not exist before it is created: distribution/* of this
-            # account (AWS::CloudFront::Distribution handlers).
+          - Sid: WebDistributionCreate
+            # A distribution's id does not exist before it is created (distribution/*), and its
+            # ARN holds no name: the request must carry this project's tag instead. TagResource:
+            # the tags sent with the create (AWS::CloudFront::Distribution handlers).
             Effect: Allow
             Action: [cloudfront:CreateDistribution, cloudfront:CreateDistributionWithTags,
-                     cloudfront:GetDistribution, cloudfront:GetDistributionConfig,
-                     cloudfront:UpdateDistribution, cloudfront:DeleteDistribution,
-                     cloudfront:TagResource, cloudfront:UntagResource, cloudfront:ListTagsForResource]
+                     cloudfront:TagResource]
+            Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: WebDistribution
+            # Changes only to distributions that carry this project's tag.
+            Effect: Allow
+            Action: [cloudfront:UpdateDistribution, cloudfront:DeleteDistribution,
+                     cloudfront:TagResource, cloudfront:UntagResource]
+            Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/project: team-assistant
+          - Sid: WebDistributionRead
+            # Reads carry no tag condition: CloudFormation reads a distribution again after
+            # deleting it, and a distribution that no longer exists has no tag to match.
+            Effect: Allow
+            Action: [cloudfront:GetDistribution, cloudfront:GetDistributionConfig,
+                     cloudfront:ListTagsForResource]
             Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
           - Sid: WebAccessControlAndHeaders
             # The origin access control (CloudFront signs its requests to the bucket) and the
             # response headers policy (AWS::CloudFront::OriginAccessControl and
-            # AWS::CloudFront::ResponseHeadersPolicy handlers).
+            # AWS::CloudFront::ResponseHeadersPolicy handlers). Both types have no tags and
+            # their ARNs hold a generated id, so neither a tag nor a name can narrow them.
             Effect: Allow
             Action: [cloudfront:CreateOriginAccessControl, cloudfront:GetOriginAccessControl,
                      cloudfront:UpdateOriginAccessControl, cloudfront:DeleteOriginAccessControl,

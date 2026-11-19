@@ -111,6 +111,26 @@ def test_other_user_passes_for_separate_histories_and_fails_on_a_leak():
     assert not passed and "bob was told alice's word" in detail
 
 
+def refusing(message):
+    def ask(user, session, prompt):
+        raise smoke.chat.ChatError(message)
+
+    return ask
+
+
+def test_session_binding_passes_only_when_bob_is_refused_as_another_user():
+    refused = refusing("this session id is in use by another user; start a new conversation")
+    nothing = lambda user, session: []  # noqa: E731
+    assert smoke.check_session_binding(refused, nothing, "alice", "bob", "s")[0]
+    passed, detail = smoke.check_session_binding(Agent().ask, nothing, "alice", "bob", "s")
+    assert not passed and "was answered in alice's running session" in detail
+    passed, detail = smoke.check_session_binding(refusing("boom"), nothing, "alice", "bob", "s")
+    assert not passed and "another reason" in detail
+    stored = lambda user, session: ["Which word?"]  # noqa: E731
+    passed, detail = smoke.check_session_binding(refused, stored, "alice", "bob", "s")
+    assert not passed and "stored for bob" in detail
+
+
 def test_other_user_fails_when_the_stored_messages_cannot_be_compared():
     agent = Agent()
     assert not smoke.check_other_user(agent.ask, lambda user, s: [], "alice", "bob", "s", WORD)[0]
@@ -437,6 +457,32 @@ def test_conversations_fail_without_the_session_or_its_title():
     read, _ = reader({("alice", "conversations"): {"type": "conversations", "items": []}})
     passed, detail = smoke.check_conversations(read, "alice", "s-1")
     assert not passed and "lacks" in detail
+
+
+def listed(*session_ids):
+    items = [{"session_id": s, "created_at": "", "title": "t"} for s in session_ids]
+    return {"type": "conversations", "items": items}
+
+
+def test_conversations_isolation_compares_the_sessions_only_alice_has():
+    # Both users have a session under the smoke session id; it is not compared.
+    answers = {("alice", "conversations"): listed("s-1", "a-2", "a-3")}
+    read, calls = reader({**answers, ("bob", "conversations"): listed("s-1", "b-2")})
+    passed, detail = smoke.check_conversations_isolation(read, "alice", "bob", "s-1")
+    assert passed and "2 other" in detail
+    assert [(user, session) for user, session, _ in calls] == [("bob", "s-1"), ("alice", "s-1")]
+    read, _ = reader({**answers, ("bob", "conversations"): listed("s-1", "a-3")})
+    passed, detail = smoke.check_conversations_isolation(read, "alice", "bob", "s-1")
+    assert not passed and "holds 1 of alice's" in detail
+
+
+def test_conversations_isolation_fails_when_it_cannot_compare():
+    both = {("alice", "conversations"): listed("s-1"), ("bob", "conversations"): listed("s-1")}
+    read, _ = reader(both)
+    passed, detail = smoke.check_conversations_isolation(read, "alice", "bob", "s-1")
+    assert not passed and "cannot compare" in detail
+    read, _ = reader({("alice", "conversations"): listed("s-1", "a-2")})
+    assert not smoke.check_conversations_isolation(read, "alice", "bob", "s-1")[0]
 
 
 def history_of(*texts):

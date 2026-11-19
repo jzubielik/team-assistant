@@ -7,11 +7,13 @@
 Runs the conversations in scripts/conversations.toml as one logged-in user, each in a new
 session. For each namespace in config.NAMESPACES it waits for records created since the
 conversation began and notes the seconds from the last answer to the first record. Then it
-searches the retrieval namespaces with the follow-up question under the operator's profile,
-with the settings from config/agent.toml, the way the session manager does (namespacePath,
-top_k, then the relevance threshold): a client-side reproduction, labelled so in the report,
-because the agent writes no memory content to logs. Last, it asks the follow-up in another new
-session. Writes a Markdown report; namespaces appear as templates, never with an actor id.
+asks the follow-up questions in another new session, one after the other, and notes which
+tools the model called for each. Beside each answer it shows what a search with the question's
+own text alone finds in the preference and fact namespaces (under the operator's profile,
+with the retrieval settings from config/agent.toml, or TOP_K and no threshold when none is
+set): a client-side search, labelled so in the report, to compare with what the model found
+through its tools. Writes a Markdown report; namespaces appear as templates, never with an
+actor id.
 """
 
 from __future__ import annotations
@@ -30,7 +32,11 @@ import chat  # noqa: E402
 import memory  # noqa: E402
 import smoke  # noqa: E402
 
-from team_assistant.config import NAMESPACES, load_config  # noqa: E402
+from team_assistant.config import NAMESPACES, RetrievalSetting, load_config  # noqa: E402
+
+# How many records per namespace the report's comparison search returns, when
+# config/agent.toml has no [memory.retrieval.*] block.
+TOP_K = 5
 
 DEFAULT_PATH = Path(__file__).resolve().parent / "conversations.toml"
 _KEYS = {"name", "messages", "followup"}
@@ -40,7 +46,7 @@ _KEYS = {"name", "messages", "followup"}
 class Conversation:
     name: str
     messages: list[str]
-    followup: str
+    followup: list[str]  # asked in this order in one new session
 
 
 @dataclass(frozen=True)
@@ -59,15 +65,21 @@ class Retrieved:
 
 
 @dataclass(frozen=True)
+class Followup:
+    question: str
+    retrieved: list[Retrieved]  # the search with this question alone, per namespace
+    answer: str
+    usage: tuple[int, int]  # (input, output) tokens
+    tools: list[str]  # the tools the model called, in order
+
+
+@dataclass(frozen=True)
 class ConversationResult:
     name: str
     messages: list[str]
     usage: list[tuple[int, int]]  # (input, output) tokens per message
     namespaces: list[NamespaceResult]
-    retrieved: list[Retrieved]
-    followup: str
-    answer: str
-    followup_usage: tuple[int, int]
+    followups: list[Followup]
 
 
 def load_conversations(path: Path = DEFAULT_PATH) -> list[Conversation]:
@@ -86,14 +98,27 @@ def load_conversations(path: Path = DEFAULT_PATH) -> list[Conversation]:
             raise ValueError(f"{where}: name must be a non-empty string")
         if not isinstance(messages, list) or not messages:
             raise ValueError(f"{where}: messages must be a non-empty list")
-        if not isinstance(followup, str) or not followup:
-            raise ValueError(f"{where}: followup must be a non-empty string")
-        found.append(Conversation(name, [str(m) for m in messages], followup))
+        questions = [followup] if isinstance(followup, str) else followup
+        if (
+            not isinstance(questions, list)
+            or not questions
+            or not all(isinstance(q, str) and q for q in questions)
+        ):
+            raise ValueError(f"{where}: followup must be a non-empty string or a list of them")
+        found.append(Conversation(name, [str(m) for m in messages], questions))
     return found
 
 
 def measured_namespaces() -> list[str]:
     return list(NAMESPACES.values())
+
+
+def searched() -> dict[str, RetrievalSetting]:
+    """Namespace template -> the search shown beside each follow-up question."""
+    configured = load_config().retrieval
+    if configured:
+        return configured
+    return {NAMESPACES[name]: RetrievalSetting(TOP_K, 0.0) for name in ("preferences", "facts")}
 
 
 def new_records(records: list[dict], since: datetime.datetime) -> list[dict]:
@@ -128,51 +153,59 @@ def render_report(results: list[ConversationResult], env: str, date: str) -> str
             lines.append(f"| `{n.namespace}` | {after} | {text} |".replace("|  |", "| |"))
         lines += [
             "",
-            "Retrieval for the follow-up question: client-side reproduction of the session "
-            "manager's retrieval, with the settings from config/agent.toml.",
-            "",
-            "| Namespace | Score | Into the prompt | Record |",
-            "|---|---|---|---|",
+            "Follow-up questions, asked in one new session. The table under each: a "
+            "client-side search with the question alone as the query, to compare with what "
+            "the model found through its tools.",
         ]
-        for s in r.retrieved:
-            for score, text in s.found:
-                below = f"dropped (below {s.relevance_score})"
-                kept = "kept" if score >= s.relevance_score else below
-                lines.append(f"| `{s.namespace}` | {score:.2f} | {kept} | {one_line(text)} |")
-            if not s.found:
-                lines.append(f"| `{s.namespace}` | | nothing found | |")
-        tokens_in, tokens_out = r.followup_usage
-        lines += [
-            "",
-            f"Follow-up in a new session: {one_line(r.followup)}",
-            "",
-            f"Answer: {one_line(r.answer)} ({tokens_in} in, {tokens_out} out)",
-        ]
+        for f in r.followups:
+            lines += [
+                "",
+                f"Follow-up: {one_line(f.question)}",
+                "",
+                "| Namespace | Score | Above the threshold | Record |",
+                "|---|---|---|---|",
+            ]
+            for s in f.retrieved:
+                for score, text in s.found:
+                    below = f"no (below {s.relevance_score})"
+                    kept = "yes" if score >= s.relevance_score else below
+                    lines.append(f"| `{s.namespace}` | {score:.2f} | {kept} | {one_line(text)} |")
+                if not s.found:
+                    lines.append(f"| `{s.namespace}` | | nothing found | |")
+            tokens_in, tokens_out = f.usage
+            lines += [
+                "",
+                f"Tools the model called: {', '.join(f.tools) or 'none'}",
+                "",
+                f"Answer: {one_line(f.answer)} ({tokens_in} in, {tokens_out} out)",
+            ]
     return "\n".join(lines) + "\n"
 
 
-def ask_with_usage(events) -> tuple[str, tuple[int, int]]:
-    """Answer text and (input, output) tokens of one streamed answer."""
-    parts, usage = [], (0, 0)
+def ask_with_usage(events) -> tuple[str, tuple[int, int], list[str]]:
+    """Answer text, (input, output) tokens and the tools called, of one streamed answer."""
+    parts, usage, tools = [], (0, 0), []
     for event in events:
         if event.get("type") == "text":
             parts.append(event.get("data", ""))
+        elif event.get("type") == "tool":
+            tools.append(str(event.get("name", "")))
         elif event.get("type") == "done":
             found = event.get("usage", {})
             usage = (found.get("input", 0), found.get("output", 0))
         elif event.get("type") == "error" or "error" in event:
             raise chat.ChatError(str(event.get("message") or event.get("error")))
-    return "".join(parts), usage
+    return "".join(parts), usage, tools
 
 
 def measure(
     conversation: Conversation,
-    ask: Callable[[str, str], tuple[str, tuple[int, int]]],
+    ask: Callable[[str, str], tuple[str, tuple[int, int], list[str]]],
     list_records: Callable[[str], list[dict]],
     search: Callable[[str, str, int], list[tuple[float, str]]],
     actor: str,
 ) -> ConversationResult:
-    """One conversation: run it, wait for records, reproduce retrieval, ask the follow-up.
+    """One conversation: run it, wait for records, reproduce retrieval, ask the follow-ups.
 
     ``ask(session, prompt)``, ``list_records(namespace)`` and ``search(namespace, query,
     top_k)`` take resolved namespaces; results name namespaces by template.
@@ -189,21 +222,18 @@ def measure(
         seconds = (first["createdAt"] - answered).total_seconds() if first else None
         texts = [r.get("content", {}).get("text", "") for r in records]
         namespaces.append(NamespaceResult(template, texts, seconds))
-    retrieved = []
-    for template, setting in load_config().retrieval.items():
-        resolved = memory.namespace_of(template, actor, session)
-        found = search(resolved, conversation.followup, setting.top_k)
-        retrieved.append(Retrieved(template, setting.top_k, setting.relevance_score, found))
-    answer, followup_usage = ask(smoke.new_session_id(), conversation.followup)
+    followups = []
+    followup_session = smoke.new_session_id()
+    for question in conversation.followup:
+        retrieved = []
+        for template, setting in searched().items():
+            resolved = memory.namespace_of(template, actor, session)
+            found = search(resolved, question, setting.top_k)
+            retrieved.append(Retrieved(template, setting.top_k, setting.relevance_score, found))
+        answer, followup_usage, tools = ask(followup_session, question)
+        followups.append(Followup(question, retrieved, answer, followup_usage, tools))
     return ConversationResult(
-        conversation.name,
-        conversation.messages,
-        usage,
-        namespaces,
-        retrieved,
-        conversation.followup,
-        answer,
-        followup_usage,
+        conversation.name, conversation.messages, usage, namespaces, followups
     )
 
 
@@ -234,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     def token() -> str:
         return auth.access_token(endpoints, args.env, args.user)
 
-    def ask(session: str, prompt: str) -> tuple[str, tuple[int, int]]:
+    def ask(session: str, prompt: str) -> tuple[str, tuple[int, int], list[str]]:
         return ask_with_usage(chat.invoke(url, token(), session, prompt))
 
     def search(namespace: str, query: str, top_k: int) -> list[tuple[float, str]]:

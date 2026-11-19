@@ -55,9 +55,9 @@ updates:
     commit-message:
       prefix: build
 
-  # The CDK CLI (aws-cdk) in infra/package.json.
+  # The CDK CLI (aws-cdk) in infra/package.json and the page's packages in web/package.json.
   - package-ecosystem: npm
-    directory: /infra
+    directories: [/infra, /web]
     schedule:
       interval: weekly
     cooldown:

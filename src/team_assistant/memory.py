@@ -5,12 +5,10 @@ every message as an event under (memory id, actor id, session id) and loads the 
 triple when the agent starts. The actor id is the user's id from the verified token
 (identity.py), so one user cannot read another user's history by reusing a session id.
 
-Long-term memory: strategies in the stack extract records into config.NAMESPACES. Before each
-model call the session manager searches the namespaces named in the retrieval settings with the
-user's message and prepends what it finds to that message, inside <user_context>
-(bedrock-agentcore 1.26.0, session_manager.py, retrieve_customer_context). A failed search is
-logged by the library (WARNING "Memory retrieval failed ...") and the agent answers without
-those records.
+Long-term memory is in recall.py. The session manager can also search namespaces with each
+user message before the model call and prepend what it finds to that message, inside
+<user_context> (bedrock-agentcore 1.26.0, session_manager.py, retrieve_customer_context); that
+runs only for the namespaces named in the optional retrieval settings, none by default.
 """
 
 from __future__ import annotations

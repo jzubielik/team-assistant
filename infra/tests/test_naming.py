@@ -38,7 +38,7 @@ def test_longest_env_has_15_characters():
     assert validate_env(LONGEST_ENV) == LONGEST_ENV
 
 
-@pytest.mark.parametrize("env", ["dev", "a-b", "p1", "custom-test", LONGEST_ENV])
+@pytest.mark.parametrize("env", ["dev", "a-b", "p1", "custom-test", "gateway2", LONGEST_ENV])
 def test_valid_env(env):
     assert validate_env(env) == env
 
@@ -55,6 +55,9 @@ def test_valid_env(env):
         "a_b",
         "a b",
         LONGEST_ENV + "x",
+        # Its gateway would match the permissions of environment "dev" (…-dev-gateway-*).
+        "dev-gateway-x",
+        "gateway",
     ],
 )
 def test_invalid_env(env):

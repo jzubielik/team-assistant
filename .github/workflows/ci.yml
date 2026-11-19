@@ -43,7 +43,7 @@ jobs:
       # page's check (types, unit tests, build), in the runner. No AWS call and no AWS credentials in this workflow.
       - name: make check
         run: make check
-      # pip-audit of the locked Python dependencies (queries the advisory database).
+      # pip-audit and npm audit of the locked dependencies (query the advisory databases).
       - name: make audit
         run: make audit
       # Catch Makefile breakage offline: -n only prints the recipe, nothing is called.

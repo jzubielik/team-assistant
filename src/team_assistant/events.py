@@ -11,6 +11,7 @@ from __future__ import annotations
 EVENT_FIELDS: dict[str, frozenset[str]] = {
     "text": frozenset({"type", "data"}),
     "auth_url": frozenset({"type", "url", "state"}),
+    "tool": frozenset({"type", "name"}),
     "done": frozenset({"type", "usage"}),
     "error": frozenset({"type", "message"}),
     "consent_done": frozenset({"type"}),
@@ -27,6 +28,11 @@ def text(data: str) -> dict:
 def auth_url(url: str, state: str) -> dict:
     """The user must consent in GitHub first; ``state`` comes back with the browser's return."""
     return {"type": "auth_url", "url": url, "state": state}
+
+
+def tool(name: str) -> dict:
+    """The model called a tool; its name only, never its input or result."""
+    return {"type": "tool", "name": name}
 
 
 def done(input_tokens: int, output_tokens: int) -> dict:

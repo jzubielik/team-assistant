@@ -23,7 +23,10 @@ Who can do what in one environment.
    issued without the binding.
 4. **Agent.** The agent takes the user id from the verified token (`sub`) and opens only that
    user's conversation history. A request without a usable token is an error; there is no
-   default user.
+   default user. The Runtime routes by session id alone, so the agent keeps each session id to
+   the user who used it first for as long as the session's microVM runs, and refuses it to
+   anyone else: two users never share a microVM. A stopped session's id is free again; its
+   history stays per user.
 5. **Permissions.** The agent's role (below) can call one model, read and write one Memory and
    get users' GitHub tokens from one provider; the gateway's role can only exchange tokens
    through its own provider and invoke this Runtime. Deployments run with a
@@ -44,7 +47,8 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 | `bedrock-agentcore:ListEvents` | this environment's Memory | load the conversation; read a conversation's history and title for the web page |
 | `bedrock-agentcore:ListSessions` | this environment's Memory | list the asking user's conversations for the web page (the actor comes from the token) |
 | `bedrock-agentcore:DeleteEvent` | this environment's Memory | the session manager replaces stored agent state |
-| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | search the user's preferences and facts before each model call |
+| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | the model's memory tools search the user's facts, or the summaries of the user's conversations by topic |
+| `bedrock-agentcore:ListMemoryRecords` | this environment's Memory | list the user's preferences for the system prompt, and a past conversation's summary |
 | `bedrock-agentcore:GetResourceOauth2Token` | the default token vault, this environment's GitHub provider, this Runtime's workload identity | get the asking user's GitHub token, or a consent URL |
 | `bedrock-agentcore:CompleteResourceTokenAuth` | the same | bind a user's consent to the user named by the request's token |
 | `secretsmanager:GetSecretValue` | this environment's GitHub client secret | AgentCore reads the OAuth App's secret with the caller's credentials |
@@ -60,7 +64,7 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 | `ecr:GetAuthorizationToken` | `*` | log in to the registry; the action has no resource |
 | `bedrock-agentcore:GetWorkloadAccessToken` | the Runtime's workload identity | added by the Runtime construct; used by outbound credentials |
 | `bedrock-agentcore:GetWorkloadAccessTokenForJWT` | the Runtime's workload identity | the same |
-| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | the Runtime's workload identity | the same |
+| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | the Runtime's workload identity | added by the Runtime construct; denied below |
 | `xray:PutTraceSegments` | `*` | added by the Runtime construct; the agent's spans |
 | `xray:PutTelemetryRecords` | `*` | the same |
 | `xray:GetSamplingRules` | `*` | the same |
@@ -69,6 +73,15 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 
 Statements on `*` are those whose action supports no resource (registry login, X-Ray, metrics).
 The boundary narrows the log permissions to this environment's Runtime.
+
+Explicitly denied, whatever an Allow says:
+
+| Action | Resource | Why |
+|---|---|---|
+| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | `*` | names a user by a plain id, not by a verified token; every request here carries a token |
+| `bedrock-agentcore:InvokeAgentRuntimeForUser` | `*` | the same |
+| `bedrock-agentcore:GetWorkloadAccessToken` | every workload identity but this Runtime's | the construct allows all identities of the account; the agent acts only as itself |
+| `bedrock-agentcore:GetWorkloadAccessTokenForJWT` | the same | the same |
 
 ## Gateway role
 
@@ -83,6 +96,13 @@ service, this account, a gateway named `team-assistant-<env>-gateway`).
 | `bedrock-agentcore:GetWorkloadAccessTokenForJWT` | the same | the same, for the user named by the caller's token |
 | `bedrock-agentcore:GetResourceOauth2Token` | the default token vault, this environment's exchange provider, the gateway's workload identity | exchange the caller's token for the one sent to the Runtime |
 | `secretsmanager:GetSecretValue` | the exchange provider's placeholder secret | AgentCore reads the provider's client secret with the caller's credentials; the value is a generated placeholder that Cognito ignores |
+
+Explicitly denied, whatever an Allow says:
+
+| Action | Resource | Why |
+|---|---|---|
+| `bedrock-agentcore:GetWorkloadAccessTokenForUserId` | `*` | names a user by a plain id, not by a verified token; the gateway always has the caller's token |
+| `bedrock-agentcore:InvokeAgentRuntimeForUser` | `*` | the same |
 
 The gateway exchanges the caller's token at the user pool and sends the issued token to the
 Runtime, which verifies it again. The role holds `InvokeAgentRuntime`, as the official samples
@@ -104,7 +124,9 @@ grant it.
   the client checks the `state` the agent sent, so a return from another consent is not
   forwarded. Only the agent's role holds `CompleteResourceTokenAuth`.
 - **The token never reaches the model**: the tools' schemas have only `repository` and
-  `state` (`list_issues`) or `repository` and `number` (`get_issue`).
+  `state` (`list_issues`) or `repository` and `number` (`get_issue`). The memory tools take
+  only `query` (`search_memory`) or `days` and `topic` (`recall_conversations`): the user is the token's,
+  and the model cannot name another one.
   It is not logged, not streamed and not written outside the vault.
 - **Scope**: the OAuth App requests no scope, so the token reads public data only.
 - **The OAuth App's client secret** is in Secrets Manager; the deploy role can read it (AgentCore
@@ -171,8 +193,11 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
 - **get_issue** gives the model an issue's text, cut at 2,000 characters and marked as the
   author's words, not instructions.
 - **Deployment** of the page uses a fourth bootstrap policy, `TeamAssistantCdkExecutionWeb`:
-  S3 on buckets named `ta-*-web-*`, CloudFront on this account's distributions, origin access
-  controls and response headers policies; actions from the CloudFormation resource schemas.
+  S3 on buckets named `ta-*-web-*`; CloudFront distributions that carry the tag
+  `project=team-assistant` (created with it, changed and deleted only with it; reads of any
+  distribution of the account); this account's origin access controls and response headers
+  policies, which have neither tags nor names in their ARNs. Actions from the CloudFormation
+  resource schemas.
 
 ## Residual risks
 
@@ -181,11 +206,13 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
   condition keys for the actor (`bedrock-agentcore:actorId`) and, on `RetrieveMemoryRecords`,
   for the namespace (`bedrock-agentcore:namespace`, `bedrock-agentcore:namespacePath`), but one
   role serves all users, so none of them can be bound to the caller here.
-- A failed long-term search does not stop the answer: `MemoryClient.retrieve_memories`
-  (bedrock-agentcore 1.26.0) logs `Memory retrieval failed (%s): %s` and the agent answers
-  without the user's records. The line reaches the Runtime's log without its values
-  (`src/team_assistant/logs.py`); no alarm watches it
-  (the project has no alarms).
+- A failed read of long-term memory does not stop the answer: without the listed preferences
+  the agent answers without them (log line `preferences_failed`), and a memory tool that
+  fails tells the model so (log line `tool_failed`). Both lines name the error type only; no
+  alarm watches them (the project has no alarms).
+- Long-term records are text extracted from the user's own earlier messages. The preferences
+  among them enter the system prompt of that user's later requests, so a user can shape the
+  instructions of their own conversations, not of anyone else's.
 - The model is reachable through any region the global inference profile routes to.
 - The Runtime's log groups are created by the service without a retention period; `make destroy`
   deletes them (logs are kept until then, no longer and no shorter).
@@ -204,6 +231,10 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
   prevent such script.
 - An issue's text can try to instruct the model; it is marked as data, which lowers but does
   not remove that risk. The tools only read public repositories.
+- What the assistant writes, about an issue or as its own suggestion, becomes part of that
+  conversation's summary. Summaries are returned only by `recall_conversations`, for questions
+  about earlier conversations, marked as data and as the assistant's past suggestions; the
+  fact search never reads them. The text stays within that user's records.
 - The token vault is one per account and region, shared by every environment in the account;
   separate vaults need separate accounts. It uses the AWS owned key (no customer managed key in
   this project).

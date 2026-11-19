@@ -234,6 +234,7 @@ class TeamAssistantStack(cdk.Stack):
                 resources=[self.exchange_secret.secret_arn],
             )
         )
+        self._deny_user_id_access(self.gateway_role)
         runtime_arn = self.runtime.agent_runtime_arn
         # Invoking this one Runtime (and its endpoints) is all the gateway's role may do.
         self.gateway_role.add_to_principal_policy(
@@ -444,6 +445,16 @@ class TeamAssistantStack(cdk.Stack):
         )
         # The deploy permissions allow roles only under this path (docs/adr/0001).
         runtime.role.node.default_child.path = ROLE_PATH
+        # The construct trusts runtime/<name>*, which also matches a Runtime whose name only
+        # starts with this one. A Runtime id is <name>-<10 characters>.
+        runtime.role.node.default_child.add_property_override(
+            "AssumeRolePolicyDocument.Statement.0.Condition.ArnLike.aws:SourceArn",
+            cdk.Stack.of(self).format_arn(
+                service="bedrock-agentcore",
+                resource=f"runtime/{self.names.runtime}-*",
+                arn_format=cdk.ArnFormat.NO_RESOURCE_NAME,
+            ),
+        )
         self._grant_agent(runtime.role)
         cdk.CfnOutput(self, "RuntimeArn", value=runtime.agent_runtime_arn)
         return runtime
@@ -481,14 +492,18 @@ class TeamAssistantStack(cdk.Stack):
                 resources=[self.memory.attr_memory_arn],
             )
         )
-        # The search the session manager runs before each model call (bedrock-agentcore 1.26.0,
-        # memory/client.py, retrieve_memories). No IAM condition on the namespace: the role is
-        # shared by every user, so it cannot tell alice from bob; that separation is the actor
-        # id from the verified token (identity.py).
+        # Long-term records (recall.py): the user's preferences and a session's summary are
+        # listed, facts and summaries are searched by the model's memory tool. No IAM
+        # condition on the namespace: the role is shared by every user, so it cannot tell
+        # alice from bob; that separation is the actor id from the verified token
+        # (identity.py).
         role.add_to_principal_policy(
             iam.PolicyStatement(
                 sid="LongTermRecords",
-                actions=["bedrock-agentcore:RetrieveMemoryRecords"],
+                actions=[
+                    "bedrock-agentcore:RetrieveMemoryRecords",
+                    "bedrock-agentcore:ListMemoryRecords",
+                ],
                 resources=[self.memory.attr_memory_arn],
             )
         )
@@ -509,6 +524,55 @@ class TeamAssistantStack(cdk.Stack):
             )
         )
         self._github_permissions(role)
+        self._deny_user_id_access(role)
+        # The Runtime construct allows the token actions on every workload identity of the
+        # account, and the boundary (one for both roles) allows the gateway's identity. The
+        # agent needs a token only for its own identity, so every other identity is denied.
+        # AgentCore checks these actions against two resources, the identity directory and
+        # the identity itself; the Deny leaves out both for the agent's own identity.
+        stack = cdk.Stack.of(self)
+        directory = "workload-identity-directory/default"
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="DenyOtherWorkloadIdentities",
+                effect=iam.Effect.DENY,
+                actions=[
+                    "bedrock-agentcore:GetWorkloadAccessToken",
+                    "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+                ],
+                not_resources=[
+                    stack.format_arn(
+                        service="bedrock-agentcore",
+                        resource=resource,
+                        arn_format=cdk.ArnFormat.NO_RESOURCE_NAME,
+                    )
+                    for resource in (
+                        directory,
+                        f"{directory}/workload-identity/{self.names.runtime}-*",
+                    )
+                ],
+            )
+        )
+
+    def _deny_user_id_access(self, role: iam.IRole) -> None:
+        """Deny the two actions that name a user by a plain id instead of a verified token.
+
+        Every request here carries a user's token, so nothing needs them, and with them a
+        caller could act for any user id it chooses (AgentCore developer guide,
+        runtime-security-best-practices). An explicit Deny holds even if an Allow is added
+        later; the Runtime construct allows GetWorkloadAccessTokenForUserId by default.
+        """
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="DenyUserIdAccess",
+                effect=iam.Effect.DENY,
+                actions=[
+                    "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+                    "bedrock-agentcore:InvokeAgentRuntimeForUser",
+                ],
+                resources=["*"],
+            )
+        )
 
     def _github_permissions(self, role: iam.IRole) -> None:
         """What the agent needs to get a user's GitHub token and to complete a user's consent.

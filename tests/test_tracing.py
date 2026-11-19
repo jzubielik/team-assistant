@@ -15,7 +15,7 @@ from strands import tool
 from strands.telemetry import tracer as strands_tracer
 
 from conftest import FakeModel, collect
-from team_assistant import app
+from team_assistant import app, prompts
 from team_assistant.config import AgentConfig
 
 CONFIG = AgentConfig("fake-model", 100, 30)
@@ -105,7 +105,7 @@ def test_spans_hold_no_prompt_answer_or_tool_text(monkeypatch, context, managers
     spans = traced(monkeypatch, REDACT, context, managers, model, tools=[lookup])
     text = everything_in(spans)
     assert any("lookup" in span.name for span in spans), [span.name for span in spans]
-    for secret in (PROMPT, ANSWER, TOOL_INPUT, TOOL_OUTPUT, app.SYSTEM_PROMPT):
+    for secret in (PROMPT, ANSWER, TOOL_INPUT, TOOL_OUTPUT, prompts.SYSTEM_PROMPT):
         assert secret not in text, secret
 
 
