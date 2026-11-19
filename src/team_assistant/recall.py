@@ -73,7 +73,13 @@ def _text(record: dict) -> str:
 
 
 def _records(client, memory_id: str, namespace: str) -> list[dict]:
-    """Every record in exactly this namespace; none when Memory does not know it yet."""
+    """The records stored under exactly this namespace, at most conversations.MAX_PAGES pages
+    of 100.
+
+    The match is exact: ``/summaries/<user>/`` does not return the records of
+    ``/summaries/<user>/<session>/``. An empty list when Memory answers
+    ResourceNotFoundException instead of an empty page.
+    """
     try:
         pages = _pages(client.list_memory_records, memoryId=memory_id, namespace=namespace)
     except Exception as error:
