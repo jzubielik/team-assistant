@@ -66,6 +66,42 @@ def test_session_manager_gets_the_retrieval_settings_from_the_config(context, ma
     assert manager.retrieval == {"/facts/{actorId}/": setting}
 
 
+class SmallWindowModel(FakeModel):
+    """A model whose context window a short conversation fills."""
+
+    def get_config(self):
+        return {"model_id": "fake", "context_window_limit": 400}
+
+
+def test_a_long_conversation_keeps_its_beginning_as_a_summary(managers):
+    model = SmallWindowModel(chunks=("The user counted from 0 to 13.",))
+    manager = managers("mem-1", "u-1", "s-1", "eu-west-1", {})
+    agent = app.build_agent(CONFIG, manager, "u-1", "s-1", model)
+    for n in range(14):
+        role = "user" if n % 2 == 0 else "assistant"
+        agent.messages.append({"role": role, "content": [{"text": f"number {n} " * 30}]})
+    agent("and the next one?")
+    # Two model calls: the summary of the oldest messages, then the answer.
+    assert len(model.calls) == 2
+    first = agent.messages[0]
+    assert first["role"] == "user" and "counted from 0 to 13" in first["content"][0]["text"]
+    assert len(agent.messages) < 16
+    assert agent.messages[-2]["content"][0]["text"] == "and the next one?"
+    state = agent.conversation_manager.get_state()
+    assert state["summary_message"] == first and state["removed_message_count"] > 0
+
+
+def test_a_short_conversation_is_sent_whole(managers):
+    model = FakeModel()
+    manager = managers("mem-1", "u-1", "s-1", "eu-west-1", {})
+    agent = app.build_agent(CONFIG, manager, "u-1", "s-1", model)
+    for n in range(50):
+        role = "user" if n % 2 == 0 else "assistant"
+        agent.messages.append({"role": role, "content": [{"text": f"number {n}"}]})
+    agent("and the next one?")
+    assert len(model.calls) == 1 and len(model.calls[0]["messages"]) == 51
+
+
 REFUSED = [{"type": "error", "message": app.OTHER_USERS_SESSION}]
 
 

@@ -72,7 +72,11 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
    prepends what it finds to that message inside `<user_context>`. A failed search is logged as
    a WARNING and the answer goes on without those records.
 6. The Strands agent sends the history and the new message to the model and streams the answer
-   back as server-sent events; the session manager stores both messages as events.
+   back as server-sent events; the session manager stores both messages as events. Before a
+   model call that would fill 70 % of the model's context window, the agent first replaces
+   the oldest messages by a summary the same model writes (one more model call); the summary
+   is stored with the agent's state and restored with the session. The stored events, and so
+   the history the web page shows, stay complete.
 7. About a minute later, outside the request, the three strategies extract long-term records
    from the new events. Summaries are kept for the operator (`make memory`), never retrieved.
 8. One log line records the user id, the session id and the token counts; never the content.

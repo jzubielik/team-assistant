@@ -32,7 +32,8 @@ class FakeModel(Model):
         pass
 
     def get_config(self):
-        return {"model_id": "fake"}
+        # With a known window, Strands does not warn that it has to assume one.
+        return {"model_id": "fake", "context_window_limit": 200_000}
 
     async def structured_output(self, output_model, prompt, system_prompt=None, **kwargs):
         raise NotImplementedError

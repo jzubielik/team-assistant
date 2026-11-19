@@ -36,6 +36,7 @@ from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent
+from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models import BedrockModel, Model
 from strands.types.exceptions import ContextWindowOverflowException, ModelThrottledException
 
@@ -129,6 +130,11 @@ def build_agent(
         system_prompt=SYSTEM_PROMPT,
         session_manager=session_mgr,
         tools=list(tools or []),
+        # A long conversation keeps its beginning as a summary: before a model call that would
+        # fill 70 % of the model's context window, the oldest messages are replaced by a
+        # summary the same model writes. The summary is stored with the agent's state and
+        # restored with the session. (The default manager drops messages beyond the last 40.)
+        conversation_manager=SummarizingConversationManager(proactive_compression=True),
         # The default handler prints the answer to stdout, which is the Runtime's log.
         callback_handler=None,
         # Strands puts these on every span it creates (agent, cycle, model call, tool call), so
