@@ -42,13 +42,13 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 |---|---|---|
 | `bedrock:InvokeModel` | the configured inference profile and the model it routes to | answer a message |
 | `bedrock:InvokeModelWithResponseStream` | the same | stream the answer |
-| `bedrock-agentcore:CreateEvent` | this environment's Memory | store a message |
+| `bedrock-agentcore:CreateEvent` | this environment's Memory | store a message or a conversation's title |
 | `bedrock-agentcore:GetEvent` | this environment's Memory | load the conversation |
 | `bedrock-agentcore:ListEvents` | this environment's Memory | load the conversation; read a conversation's history and title for the web page |
 | `bedrock-agentcore:ListSessions` | this environment's Memory | list the asking user's conversations for the web page (the actor comes from the token) |
 | `bedrock-agentcore:DeleteEvent` | this environment's Memory | the session manager replaces stored agent state |
-| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | the model's memory tools search the user's facts, or the summaries of the user's conversations by topic |
-| `bedrock-agentcore:ListMemoryRecords` | this environment's Memory | list the user's preferences for the system prompt, and a past conversation's summary |
+| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | the model's memory tools search the user's facts, or the summaries of the user's conversations |
+| `bedrock-agentcore:ListMemoryRecords` | this environment's Memory | list the user's preferences for the system prompt |
 | `bedrock-agentcore:GetResourceOauth2Token` | the default token vault, this environment's GitHub provider, this Runtime's workload identity | get the asking user's GitHub token, or a consent URL |
 | `bedrock-agentcore:CompleteResourceTokenAuth` | the same | bind a user's consent to the user named by the request's token |
 | `secretsmanager:GetSecretValue` | this environment's GitHub client secret | AgentCore reads the OAuth App's secret with the caller's credentials |
@@ -124,9 +124,7 @@ grant it.
   the client checks the `state` the agent sent, so a return from another consent is not
   forwarded. Only the agent's role holds `CompleteResourceTokenAuth`.
 - **The token never reaches the model**: the tools' schemas have only `repository` and
-  `state` (`list_issues`) or `repository` and `number` (`get_issue`). The memory tools take
-  only `query` (`search_memory`) or `days` and `topic` (`recall_conversations`): the user is the token's,
-  and the model cannot name another one.
+  `state` (`list_issues`) or `repository` and `number` (`get_issue`).
   It is not logged, not streamed and not written outside the vault.
 - **Scope**: the OAuth App requests no scope, so the token reads public data only.
 - **The OAuth App's client secret** is in Secrets Manager; the deploy role can read it (AgentCore
@@ -143,7 +141,8 @@ log record. When switched on, the settings in `TRACING_ENVIRONMENT` (stack.py) a
   counts. Strands replaces prompts, answers, the system prompt and tool input and output with
   `[REDACTED]` (`tests/test_tracing.py` runs a request and searches every span for them).
 - An error's text never reaches a span from the model (the model class keeps only the error's
-  type) or from the GitHub tool (it returns a fixed text). Strands would otherwise copy the
+  type), from the GitHub tool (it returns a fixed text) or from tool arguments of a wrong type
+  (the call is cancelled before the tool, with a fixed text). Strands would otherwise copy the
   text into the span status, which no redaction setting covers, and such texts can quote
   request values.
 - No span per AWS call or HTTP request (their status holds the error text of the call, their
@@ -203,14 +202,15 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
 
 - Separation between users rests on the agent's code: the role can read every actor's events
   and long-term records in the Memory, and the agent chooses the actor from the token. IAM has
-  condition keys for the actor (`bedrock-agentcore:actorId`) and, on `RetrieveMemoryRecords`,
-  for the namespace (`bedrock-agentcore:namespace`, `bedrock-agentcore:namespacePath`), but one
-  role serves all users, so none of them can be bound to the caller here.
+  condition keys for the actor (`bedrock-agentcore:actorId`) and, on `RetrieveMemoryRecords`
+  and `ListMemoryRecords`, for the namespace (`bedrock-agentcore:namespace`,
+  `bedrock-agentcore:namespacePath`), but one role serves all users, so none of them can be
+  bound to the caller here.
 - A failed read of long-term memory does not stop the answer: without the listed preferences
   the agent answers without them (log line `preferences_failed`), and a memory tool that
   fails tells the model so (log line `tool_failed`). Both lines name the error type only; no
   alarm watches them (the project has no alarms).
-- Long-term records are text extracted from the user's own earlier messages. The preferences
+- Long-term records are text extracted from the user's earlier conversations. The preferences
   among them enter the system prompt of that user's later requests, so a user can shape the
   instructions of their own conversations, not of anyone else's.
 - The model is reachable through any region the global inference profile routes to.

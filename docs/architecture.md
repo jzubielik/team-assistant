@@ -50,7 +50,7 @@ The agent's modules:
 | `events.py` | the stream events sent to the client |
 | `logs.py` | log lines of other libraries without their values |
 
-Memory keeps events for 30 days. About a minute after the messages, three strategies extract
+Memory keeps events for 30 days. In the background, three strategies extract
 long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
 `/summaries/{actorId}/{sessionId}/`. The GitHub client secret is in Secrets Manager.
 
@@ -74,17 +74,22 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
    instructions, so the start of a user's requests stays the same from turn to turn. Facts and
    summaries are not put into the prompt: the model calls `search_memory` with a query it
    writes from the conversation (`RetrieveMemoryRecords` over the user's facts), or, for a
-   question about earlier conversations, `recall_conversations`: those of the last days
-   (`ListSessions`, then each one's title and summary) or the summaries closest to a topic.
-   A summary repeats what the assistant answered, so summaries are never returned as facts.
+   question about earlier conversations, `recall_conversations` (`RetrieveMemoryRecords` over
+   the user's summaries).
+   One call returns at most `facts_top_k` facts or `summaries_top_k` summaries
+   (`config/agent.toml`). A result that reaches the limit says so and tells the model to
+   search again for each part of the question. A summary repeats what the assistant
+   answered, so summaries are never returned as facts.
    If a read fails, the request is answered without those records.
 6. The Strands agent sends the history and the new message to the model and streams the answer
-   back as server-sent events; the session manager stores both messages as events. Before a
+   back as server-sent events; the session manager stores both messages as events. A request
+   gets at most six turns (a model call and the tool calls it asks for); one whose sixth turn
+   still asks for a tool ends with an error event. Before a
    model call that would fill 70 % of the model's context window, the agent first replaces
    the oldest messages by a summary the same model writes (one more model call); the summary
    is stored with the agent's state and restored with the session. The stored events, and so
    the history the web page shows, stay complete.
-7. About a minute later, outside the request, the three strategies extract long-term records
+7. Later, outside the request, the three strategies extract long-term records
    from the new events.
 8. One log line records the user id, the session id and the token counts; never the content.
 

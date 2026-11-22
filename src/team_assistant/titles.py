@@ -15,7 +15,7 @@ import json
 import re
 from datetime import UTC, datetime
 
-from team_assistant.conversations import TITLE_KIND, title_of
+from team_assistant.conversations import TITLE_KIND
 
 MAX_WORDS = 6
 MAX_CHARS = 60
@@ -65,21 +65,3 @@ def store_title(client, memory_id: str, actor: str, session_id: str, title: str)
         payload=[{"blob": json.dumps({"title": title})}],
         metadata={"kind": {"stringValue": TITLE_KIND}},
     )
-
-
-def title_once(
-    memory_client,
-    converse,
-    model_id: str,
-    memory_id: str,
-    actor: str,
-    session_id: str,
-    prompt: str,
-    answer: str,
-) -> None:
-    """Title the session unless it has a title already."""
-    if title_of(memory_client, memory_id, actor, session_id) is not None:
-        return
-    title = make_title(converse, model_id, prompt, answer)
-    if title:
-        store_title(memory_client, memory_id, actor, session_id, title)

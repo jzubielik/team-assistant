@@ -3,7 +3,7 @@
 # Targets that touch AWS need ENV (an environment name, e.g. dev) on the command line, and
 # PROFILE, REGION and ACCOUNT_<env> on the command line or in local.mk: make deploy ENV=dev
 # Every target except help, hooks, runner, shell, arm64 and those that use a saved login
-# (login, chat, ask, memory, smoke, measure) runs in the tool runner image
+# (login, chat, ask, memory, smoke) runs in the tool runner image
 # (docker/runner.Dockerfile); NATIVE=1 runs it directly on the host instead.
 
 .DEFAULT_GOAL := help
@@ -156,7 +156,7 @@ HOST_CHECK = command -v docker >/dev/null || { echo "error: docker not found: in
 
 # ---- Targets -------------------------------------------------------------------------------
 .PHONY: help runner runner-image shell arm64 setup check synth bootstrap diff deploy destroy status \
-	user login chat ask memory smoke measure github web web-sync unbootstrap hooks leaks lint audit
+	user login chat ask memory smoke github web web-sync unbootstrap hooks leaks lint audit
 
 help: ## Show this help (default target)
 	@echo "team-assistant: operator targets"
@@ -243,9 +243,6 @@ memory: ## Show what Memory stores for USER=<name> SESSION=<id> (operator's view
 
 smoke: ## End-to-end checks against the deployed environment as alice and bob (runs on the host)
 	@$(require_env)$(OPS) smoke
-
-measure: ## Measure the long-term strategies as alice; writes measurements/<date>-<env>.md, not committed (runs on the host)
-	@$(require_env)$(OPS) measure
 
 hooks: ## Use the committed git hooks in .githooks (once per clone)
 	@if [ "$$(git config --get core.hooksPath)" = .githooks ]; then \

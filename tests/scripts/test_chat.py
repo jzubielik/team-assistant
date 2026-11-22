@@ -68,12 +68,12 @@ def test_new_session_ids_are_long_enough_and_differ():
     assert chat.check_session_id(first) == first
 
 
-@pytest.mark.parametrize("session", ["short", "x" * 32, "x" * 257])
+@pytest.mark.parametrize("session", ["short", "x" * 32, "x" * 101])
 def test_a_session_id_of_the_wrong_length_stops_before_any_request(
     session, logged_in, no_network, capsys
 ):
     assert chat.main([*ARGS, "--session", session, "--prompt", "hi"]) == 1
-    assert "SESSION must have 33 to 256 characters" in capsys.readouterr().err
+    assert "SESSION must have 33 to 100 characters" in capsys.readouterr().err
 
 
 def test_sse_parsing_takes_data_lines_and_skips_the_rest():

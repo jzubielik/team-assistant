@@ -16,7 +16,7 @@ node_modules/
 # The page's settings for make web: written from a stack's outputs
 web/public/config.json
 
-# Reports of make measure: they hold conversation content and memory records
+# Operator reports: they hold conversation content and memory records
 measurements/
 
 .env

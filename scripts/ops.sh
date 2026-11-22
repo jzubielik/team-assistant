@@ -488,22 +488,6 @@ cmd_smoke() {
 		--web-url "$web_url" --web-bucket "$web_bucket"
 }
 
-# What each long-term strategy extracts and what reaches the next prompt, as a Markdown report.
-cmd_measure() {
-	need_aws
-	local out gateway memory domain client
-	out="measurements/$(date +%F)-$ENV.md"
-	banner "measure: scripted conversations as alice on $STACK (model calls; waits up to 5 min per namespace)"
-	# Read before the call: a failed $(...) inside an argument list would not stop the script.
-	gateway=$(stack_output GatewayUrl)
-	memory=$(stack_output MemoryId)
-	domain=$(stack_output LoginDomain)
-	client=$(stack_output UserPoolClientId)
-	py scripts/measure.py --profile "$PROFILE" --region "$REGION" \
-		--gateway-url "$gateway" --gateway-target "$GATEWAY_TARGET" --memory-id "$memory" \
-		--login-domain "$domain" --client-id "$client" --env "$ENV" --out "$out"
-}
-
 # The page's development server. With MOCK=1 the mock agent of web/mock answers and
 # nothing touches AWS. Without it the page talks to the environment's gateway and Cognito:
 # web/public/config.json (gitignored: it names the login domain) is written from the stack's
@@ -533,7 +517,7 @@ cmd_web() {
 main() {
 	local cmd=${1:-}
 	case "$cmd" in
-	setup | check | synth | bootstrap | diff | deploy | destroy | status | user | login | chat | ask | memory | smoke | measure | github | web)
+	setup | check | synth | bootstrap | diff | deploy | destroy | status | user | login | chat | ask | memory | smoke | github | web)
 		"cmd_$cmd"
 		;;
 	web-sync) cmd_web_sync ;;

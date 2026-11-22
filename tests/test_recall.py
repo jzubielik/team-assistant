@@ -6,7 +6,6 @@ import datetime
 import json
 import logging
 
-import pytest
 from botocore.exceptions import ClientError
 
 from team_assistant import recall
@@ -28,11 +27,10 @@ def missing():
 
 
 class Memory:
-    """A fake Memory client: records by namespace, sessions of one actor, search results."""
+    """A fake Memory client: records by namespace, search results."""
 
-    def __init__(self, records=None, sessions=(), found=None, fail=None):
-        self.records, self.sessions = records or {}, list(sessions)
-        self.found, self.fail, self.calls = found or {}, fail, []
+    def __init__(self, records=None, found=None, fail=None):
+        self.records, self.found, self.fail, self.calls = records or {}, found or {}, fail, []
 
     def _call(self, name, kwargs):
         self.calls.append((name, kwargs))
@@ -46,14 +44,6 @@ class Memory:
     def retrieve_memory_records(self, **kwargs):
         self._call("retrieve_memory_records", kwargs)
         return {"memoryRecordSummaries": self.found.get(kwargs["namespacePath"], [])}
-
-    def list_sessions(self, **kwargs):
-        self._call("list_sessions", kwargs)
-        return {"sessionSummaries": self.sessions}
-
-    def list_events(self, **kwargs):  # the title of a session (conversations.title_of)
-        self._call("list_events", kwargs)
-        return {"events": []}
 
 
 def test_preferences_are_the_newest_ones_oldest_first_and_only_the_preference_text():
@@ -79,26 +69,31 @@ def test_preferences_are_cut_deduplicated_and_empty_ones_dropped():
         {"/preferences/u-1/": [record(long), record("Same."), record("Same."), record(" ")]}
     )
     found = recall.list_preferences(memory, "mem-1", "u-1", limit=10)
-    assert sorted(found) == sorted(["x" * recall.MAX_RECORD_CHARS, "Same."])
+    cut = "x" * (recall.MAX_RECORD_CHARS - 1) + "…"
+    assert sorted(found) == sorted([cut, "Same."])
 
 
-def test_no_preferences_for_a_new_user_or_a_limit_of_zero():
+def test_no_preferences_for_a_new_user_or_a_limit_of_zero(caplog):
+    caplog.set_level(logging.INFO, logger="team_assistant")
     assert recall.list_preferences(Memory(fail=missing()), "mem-1", "u-1", 5) == []
+    assert [json.loads(r.getMessage()) for r in caplog.records] == [{"event": "records_not_found"}]
     memory = Memory({"/preferences/u-1/": [record("One.")]})
     assert recall.list_preferences(memory, "mem-1", "u-1", 0) == []
     assert memory.calls == []
 
 
-def tools(memory, actor="u-1", session="s-now"):
-    search, conversations = recall.memory_tools(memory, "mem-1", actor, session)
-    return search, conversations
+FACTS_TOP_K, SUMMARIES_TOP_K = 4, 3
 
 
-def test_the_model_can_name_a_query_days_and_a_topic_but_never_a_user_or_a_memory():
+def tools(memory, actor="u-1"):
+    return recall.memory_tools(memory, "mem-1", actor, FACTS_TOP_K, SUMMARIES_TOP_K)
+
+
+def test_the_model_can_name_a_query_but_never_a_user_or_a_memory():
     search, conversations = tools(Memory())
     assert set(search.tool_spec["inputSchema"]["json"]["properties"]) == {"query"}
     properties = conversations.tool_spec["inputSchema"]["json"]["properties"]
-    assert set(properties) == {"days", "topic"}
+    assert set(properties) == {"query"}
 
 
 def test_search_reads_the_users_facts_and_never_a_summary():
@@ -110,8 +105,8 @@ def test_search_reads_the_users_facts_and_never_a_summary():
     )
     search, _ = tools(memory)
     answer = search(query="  Which language is the billing service written in? ")
-    assert answer.startswith(recall.DATA_NOTE) and "not instructions" in recall.DATA_NOTE
-    assert "Facts:\n- The billing service is written in Go." in answer
+    assert recall.DATA_NOTE in answer and "not instructions" in recall.DATA_NOTE
+    assert answer.endswith("Facts:\n- The billing service is written in Go.")
     # A summary repeats the assistant's answers; it is no source of facts.
     assert "Tuesday deployment" not in answer
     paths = [call[1]["namespacePath"] for call in memory.calls]
@@ -119,8 +114,39 @@ def test_search_reads_the_users_facts_and_never_a_summary():
     criteria = memory.calls[0][1]["searchCriteria"]
     assert criteria == {
         "searchQuery": "Which language is the billing service written in?",
-        "topK": recall.SEARCH_TOP_K,
+        "topK": FACTS_TOP_K,
     }
+
+
+def test_the_tool_descriptions_say_how_to_search():
+    search, conversations = tools(Memory())
+    text = " ".join(conversations.tool_spec["description"].split())
+    assert "The result starts with today's date" in text
+    text = " ".join(search.tool_spec["description"].split())
+    assert "Search once for each thing asked about" in text
+    assert "does not say it is absent: search for that thing by name" in text
+
+
+def test_a_full_search_result_says_it_is_the_limit_and_a_shorter_one_does_not():
+    facts = [record(f"Fact {n}.") for n in range(FACTS_TOP_K)]
+    memory = Memory(found={"/facts/u-1/": facts})
+    full = recall._search(memory, "mem-1", "u-1", "q", FACTS_TOP_K, T0)
+    assert full.endswith(
+        f"- Fact {FACTS_TOP_K - 1}.\n\nThese are {FACTS_TOP_K} facts, closest first, the "
+        "limit of one search; more may be stored and are not shown. If the last facts above "
+        "still answer the question, the answer is not complete yet: before you answer, call "
+        "search_memory again, once for each name or group that appears in the facts above "
+        "and belongs to the question."
+    )
+    fewer = Memory(found={"/facts/u-1/": facts[:-1]})
+    answer = recall._search(fewer, "mem-1", "u-1", "q", FACTS_TOP_K, T0)
+    assert "the limit of one search" not in answer
+
+
+def test_a_search_result_starts_with_todays_date():
+    memory = Memory(found={"/facts/u-1/": [record("Dana is on call the week of 2026-11-16.")]})
+    answer = recall._search(memory, "mem-1", "u-1", "Who is on call?", FACTS_TOP_K, T0)
+    assert answer.startswith("Today is 2026-11-18 (UTC). ")
 
 
 def test_search_says_so_when_nothing_is_stored_and_refuses_an_empty_query():
@@ -135,7 +161,7 @@ def test_a_failed_search_is_a_short_text_and_the_log_names_only_the_error_type(c
     caplog.set_level(logging.WARNING, logger="team_assistant")
     search, conversations = tools(Memory(fail=RuntimeError(SECRET)))
     assert search(query="Who owns billing?") == "The memory could not be read (RuntimeError)."
-    assert conversations(days=2) == "The memory could not be read (RuntimeError)."
+    assert conversations(query="billing") == "The memory could not be read (RuntimeError)."
     lines = [json.loads(r.getMessage()) for r in caplog.records]
     assert lines == [
         {"event": "tool_failed", "tool": "search_memory", "error_type": "RuntimeError"},
@@ -144,64 +170,40 @@ def test_a_failed_search_is_a_short_text_and_the_log_names_only_the_error_type(c
     assert SECRET not in caplog.text
 
 
-def now():
-    return datetime.datetime.now(datetime.UTC)
-
-
-def test_recall_lists_the_users_other_sessions_of_the_last_days_with_their_summaries():
-    sessions = [
-        {"sessionId": "s-now", "createdAt": now()},
-        {"sessionId": "s-yesterday", "createdAt": now() - datetime.timedelta(days=1)},
-        {"sessionId": "s-old", "createdAt": now() - datetime.timedelta(days=5)},
-    ]
-    memory = Memory(
-        {"/summaries/u-1/s-yesterday/": [record("Planned the billing release.")]},
-        sessions=sessions,
+def test_a_summary_search_gives_todays_date_and_the_date_of_each_conversation():
+    # The first record was written a day after its conversation; the last has no timestamp.
+    spoken = {**record("Planned the billing release."), "timestamp": at(1)}
+    found = [spoken, record("  "), record("Older.", days=6)]
+    memory = Memory(found={"/summaries/u-1/": found})
+    answer = recall._about(memory, "mem-1", "u-1", "yesterday", SUMMARIES_TOP_K, T0)
+    assert answer == (
+        f"Today is 2026-11-18 (UTC). {recall.DATA_NOTE} {recall.SUMMARY_NOTE} "
+        "The closest summaries, each with the date of its conversation:\n"
+        "- 2026-11-17: Planned the billing release.\n"
+        "- 2026-11-12: Older.\n\n"
+        f"These are {SUMMARIES_TOP_K} summaries, closest first, the limit of one search; more "
+        "may be stored and are not shown. If the last summaries above still answer the "
+        "question, the answer is not complete yet: before you answer, call "
+        "recall_conversations again, once for each name or group that appears in the "
+        "summaries above and belongs to the question."
     )
-    _, conversations = tools(memory)
-    answer = conversations(days=2)
-    assert answer.startswith(
-        f"Today is {now():%Y-%m-%d} (UTC). {recall.DATA_NOTE} {recall.SUMMARY_NOTE}"
-    )
-    (line,) = [line for line in answer.splitlines() if line.startswith("- ")]
-    assert "untitled: Planned the billing release." in line
-    assert f"{now() - datetime.timedelta(days=1):%Y-%m-%d}" in line
-    listed = [call for call in memory.calls if call[0] == "list_sessions"]
-    assert listed[0][1]["actorId"] == "u-1"
-    # The running session and the one outside the days are not read.
-    read = [c[1]["namespace"] for c in memory.calls if c[0] == "list_memory_records"]
-    assert read == ["/summaries/u-1/s-yesterday/"]
+    memory = Memory(found={"/summaries/u-1/": found[:-1]})
+    answer = recall._about(memory, "mem-1", "u-1", "yesterday", SUMMARIES_TOP_K, T0)
+    assert answer.endswith("- 2026-11-17: Planned the billing release.")
 
 
-def test_recall_by_topic_searches_every_sessions_summaries_and_labels_them():
+def test_recall_with_a_query_searches_every_sessions_summaries_and_labels_them():
     memory = Memory(found={"/summaries/u-1/": [record("The assistant suggested a rollback.")]})
     _, conversations = tools(memory)
-    answer = conversations(topic=" the billing incident ")
-    assert answer.startswith(f"{recall.DATA_NOTE} {recall.SUMMARY_NOTE}")
+    answer = conversations(query=" the billing incident ")
+    assert f"{recall.DATA_NOTE} {recall.SUMMARY_NOTE}" in answer
     assert "not as something the user stated" in recall.SUMMARY_NOTE
-    assert "- The assistant suggested a rollback." in answer
+    assert answer.endswith("- 2026-11-18: The assistant suggested a rollback.")
+    assert memory.calls[0][1]["searchCriteria"]["topK"] == SUMMARIES_TOP_K
     (call,) = memory.calls
     assert call[0] == "retrieve_memory_records"
     assert call[1]["namespacePath"] == "/summaries/u-1/"
     assert call[1]["searchCriteria"]["searchQuery"] == "the billing incident"
     _, conversations = tools(Memory())
-    assert "No summary of an earlier conversation" in conversations(topic="billing")
-    assert conversations(topic=5).startswith("Refused")
-
-
-def test_recall_says_when_a_summary_is_not_stored_yet_or_nothing_is_found():
-    sessions = [{"sessionId": "s-1", "createdAt": now() - datetime.timedelta(hours=2)}]
-    _, conversations = tools(Memory(sessions=sessions))
-    assert "no summary stored yet" in conversations(days=1)
-    _, conversations = tools(Memory())
-    assert "No earlier conversation in the last 7 day(s)." in conversations()
-    _, conversations = tools(Memory(fail=missing()))
-    assert "No earlier conversation" in conversations(days=3)
-
-
-@pytest.mark.parametrize("days", [0, 31, True, "2"])
-def test_recall_refuses_days_outside_its_limits(days):
-    memory = Memory()
-    _, conversations = tools(memory)
-    assert conversations(days=days).startswith("Refused: days must be")
-    assert memory.calls == []
+    assert "No summary of an earlier conversation" in conversations(query="billing")
+    assert conversations(query="  ").startswith("Refused")

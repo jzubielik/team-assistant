@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import FakeModel, bearer, collect, collect_events
+from conftest import MEMORY_CLIENT, FakeModel, bearer, collect, collect_events
 from team_assistant import app, prompts
-from team_assistant.config import AgentConfig, RetrievalSetting
+from team_assistant.config import AgentConfig
 from test_tracing import ToolThenTextModel, lookup
 
 CONFIG = AgentConfig("fake-model", 100, 30)
@@ -53,22 +53,6 @@ def test_session_manager_is_built_with_sub_and_session_id_and_stores_both_turns(
     assert manager.closed
 
 
-def test_session_manager_gets_the_retrieval_settings_from_the_config(context, managers, agent_env):
-    setting = RetrievalSetting(top_k=3, relevance_score=0.4)
-    config = AgentConfig("fake-model", 100, 30, {"/facts/{actorId}/": setting})
-    stream = app.respond(
-        {"prompt": "hi"},
-        context,
-        config=config,
-        model=FakeModel(),
-        make_session_manager=managers,
-        make_tools=lambda on_auth_url, state: [],
-    )
-    collect_events(stream)
-    (manager,) = managers.built
-    assert manager.retrieval == {"/facts/{actorId}/": setting}
-
-
 class SmallWindowModel(FakeModel):
     """A model whose context window a short conversation fills."""
 
@@ -78,7 +62,7 @@ class SmallWindowModel(FakeModel):
 
 def test_a_long_conversation_keeps_its_beginning_as_a_summary(managers):
     model = SmallWindowModel(chunks=("The user counted from 0 to 13.",))
-    manager = managers("mem-1", "u-1", "s-1", "eu-west-1", {})
+    manager = managers("mem-1", "u-1", "s-1", "eu-west-1")
     agent = app.build_agent(CONFIG, manager, "u-1", "s-1", model)
     for n in range(14):
         role = "user" if n % 2 == 0 else "assistant"
@@ -96,7 +80,7 @@ def test_a_long_conversation_keeps_its_beginning_as_a_summary(managers):
 
 def test_a_short_conversation_is_sent_whole(managers):
     model = FakeModel()
-    manager = managers("mem-1", "u-1", "s-1", "eu-west-1", {})
+    manager = managers("mem-1", "u-1", "s-1", "eu-west-1")
     agent = app.build_agent(CONFIG, manager, "u-1", "s-1", model)
     for n in range(50):
         role = "user" if n % 2 == 0 else "assistant"
@@ -110,8 +94,8 @@ def test_the_users_preferences_reach_the_system_prompt_and_the_memory_tools_the_
 ):
     asked = []
 
-    def recall(region, memory_id, actor, session_id, limit):
-        asked.append((region, memory_id, actor, session_id, limit))
+    def recall(client, memory_id, actor, session_id, config):
+        asked.append((client, memory_id, actor, session_id, config.max_preferences))
         return ["Use Python for code."], [lookup]
 
     model = ToolThenTextModel()
@@ -125,7 +109,7 @@ def test_the_users_preferences_reach_the_system_prompt_and_the_memory_tools_the_
         recall=recall,
     )
     events = collect_events(stream)
-    assert asked == [("eu-west-1", "mem-1", "u-1", context.session_id, 7)]
+    assert asked == [(MEMORY_CLIENT, "mem-1", "u-1", context.session_id, 7)]
     prompt = model.calls[0]["system_prompt"]
     assert prompt.startswith(prompts.SYSTEM_PROMPT) and "- Use Python for code." in prompt
     # The model called the tool recall() gave: one tool event with its name, before the text.
@@ -133,14 +117,31 @@ def test_the_users_preferences_reach_the_system_prompt_and_the_memory_tools_the_
     assert [e["type"] for e in events].count("tool") == 1 and events[-1]["type"] == "done"
 
 
+def test_the_limits_of_the_config_reach_the_listing_and_the_memory_tools(monkeypatch):
+    seen = {}
+
+    def listing(client, memory_id, actor, limit):
+        seen["max_preferences"] = limit
+        return []
+
+    def tools(client, memory_id, actor, facts_top_k, summaries_top_k):
+        seen["top_k"] = (facts_top_k, summaries_top_k)
+        return []
+
+    monkeypatch.setattr(app, "list_preferences", listing)
+    monkeypatch.setattr(app, "memory_tools", tools)
+    config = AgentConfig("m", 100, 30, max_preferences=7, facts_top_k=9, summaries_top_k=2)
+    REAL_RECALL(MEMORY_CLIENT, "mem-1", "u-1", "s-1", config)
+    assert seen == {"max_preferences": 7, "top_k": (9, 2)}
+
+
 def test_a_failed_listing_of_preferences_costs_only_the_preferences(monkeypatch, caplog):
     def refuse(client, memory_id, actor, limit):
         raise RuntimeError(SECRET_PROMPT)
 
-    monkeypatch.setattr(app, "_memory_client", lambda region: object())
     monkeypatch.setattr(app, "list_preferences", refuse)
     caplog.set_level(logging.WARNING, logger="team_assistant")
-    preferences, tools = REAL_RECALL("eu-west-1", "mem-1", "u-1", "s-1", 5)
+    preferences, tools = REAL_RECALL(MEMORY_CLIENT, "mem-1", "u-1", "s-1", CONFIG)
     assert preferences == []
     assert [t.tool_name for t in tools] == ["search_memory", "recall_conversations"]
     line = json.loads(caplog.records[-1].getMessage())
@@ -256,7 +257,7 @@ def test_the_entrypoint_is_registered_and_takes_the_context():
 
 
 def test_the_real_agent_has_no_tools_and_prints_nothing(managers, capsys):
-    agent = app.build_agent(CONFIG, managers("m", "u", "s", "r", {}), "u", "s", FakeModel())
+    agent = app.build_agent(CONFIG, managers("m", "u", "s", "r"), "u", "s", FakeModel())
     assert agent.tool_names == []
     collect(agent.stream_async("hi"))
     assert capsys.readouterr().out == ""
@@ -269,7 +270,7 @@ def test_over_http_the_answer_is_a_stream_of_sse_data_lines(managers, agent_env,
     monkeypatch.setattr(app, "session_manager", managers)
     monkeypatch.setattr(app, "QuietBedrockModel", lambda **config: FakeModel())
     # The real tool's decorator builds an AWS client; this test is about the HTTP path.
-    monkeypatch.setattr(app, "_default_tools", lambda on_auth_url, state, return_to: [])
+    monkeypatch.setattr(app, "github_tools", lambda on_auth_url, state, return_url: [])
     session_id = "session-" + "2" * 30
     headers = {
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
@@ -325,17 +326,6 @@ def test_a_consent_url_reaches_the_client_at_once_with_the_requests_state(
     assert len(made["state"]) >= 16
     assert events[-1]["type"] == "done"
     assert "github.example" not in caplog.text
-
-
-def test_the_default_tools_are_the_github_tools_with_the_requests_state(
-    context, managers, agent_env, monkeypatch
-):
-    built = []
-    monkeypatch.setattr(
-        app, "github_tools", lambda on_auth_url, state, to: built.append((on_auth_url, state, to))
-    )
-    app._default_tools(print, "s-1", "http://localhost:8977/github/callback")
-    assert built == [(print, "s-1", "http://localhost:8977/github/callback")]
 
 
 CONSENT = {"consent": {"session_uri": "urn:ietf:params:oauth:request_uri:abc"}}
@@ -467,7 +457,7 @@ def test_the_tools_return_url_follows_the_requests_client(
 ):
     seen = []
     monkeypatch.setattr(
-        app, "_default_tools", lambda on_auth_url, state, return_to: seen.append(return_to) or []
+        app, "github_tools", lambda on_auth_url, state, return_url: seen.append(return_url) or []
     )
     payload = {"prompt": "hi"} if client is None else {"prompt": "hi", "client": client}
     collect_events(
@@ -497,7 +487,8 @@ def test_the_title_is_stored_before_done_with_the_question_and_answer(
 ):
     events, _ = run({"prompt": "Count to three"}, context, managers)
     assert events[-1]["type"] == "done"
-    ((region, model_id, memory_id, actor, session, prompt, answer),) = titles_stored
+    ((client, region, model_id, memory_id, actor, session, prompt, answer),) = titles_stored
+    assert client is MEMORY_CLIENT
     assert (region, model_id, memory_id, actor) == ("eu-west-1", "fake-model", "mem-1", "u-1")
     assert session == context.session_id and prompt == "Count to three"
     assert answer == "".join(e["data"] for e in events if e["type"] == "text")

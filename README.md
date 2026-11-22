@@ -74,8 +74,7 @@ The request path, the GitHub consent and the web page step by step:
   ([docs/security.md](docs/security.md), "Traces").
 - Separation between users rests on the agent's code: one IAM role serves all users.
 - The GitHub tools only read public repositories.
-- Not tested under load; extraction quality is measured only on scripted conversations
-  (`make measure`).
+- Not tested under load.
 - The web page is desktop only.
 
 ## Use it
@@ -104,7 +103,7 @@ make destroy ENV=dev
 | `src/team_assistant/` | the agent (Python, Strands) |
 | `web/` | the page (TypeScript, Vite, Vitest) |
 | `infra/` | the stack and the CDK bootstrap (AWS CDK, Python) |
-| `scripts/` | the operator's tools: login, chat, users, smoke, measurements |
+| `scripts/` | the operator's tools: login, chat, users, smoke |
 | `docker/` | the agent image and the pinned runner image |
 | `config/agent.toml` | model, memory, tracing |
 
@@ -113,7 +112,7 @@ make destroy ENV=dev
 | [docs/architecture.md](docs/architecture.md) | the parts and the path of a request |
 | [docs/runbook.md](docs/runbook.md) | deploy, use, tear down, troubleshoot |
 | [docs/security.md](docs/security.md) | who can do what; every permission of the agent's role; residual risks |
-| [docs/adr/](docs/adr/) | decisions: CDK bootstrap, Cognito, the JWT authorizer, the gateway as the only entry, the page's hosting |
+| [docs/adr/](docs/adr/) | decisions: CDK bootstrap, Cognito, the JWT authorizer, the gateway as the only entry, the page's hosting, long-term memory |
 
 ## License
 

@@ -21,13 +21,17 @@ def _no_sessions_from_other_tests():
     app._SESSION_USERS.clear()
 
 
+# What app._memory_client returns in every test.
+MEMORY_CLIENT = object()
+
+
 @pytest.fixture(autouse=True)
 def _no_long_term_memory(monkeypatch):
-    """No stored preferences and no memory tools unless a test passes its own ``recall``:
-    the real one builds an AWS client."""
+    """No stored preferences, no memory tools and no AWS client unless a test passes its own."""
     from team_assistant import app
 
     monkeypatch.setattr(app, "_default_recall", lambda *args: ([], []))
+    monkeypatch.setattr(app, "_memory_client", lambda region: MEMORY_CLIENT)
 
 
 class FakeModel(Model):
@@ -74,9 +78,8 @@ class FakeModel(Model):
 class FakeSessionManager(SessionManager):
     """Keeps the messages in a list; records how it was opened and that it was closed."""
 
-    def __init__(self, memory_id, actor_id, session_id, region, retrieval):
+    def __init__(self, memory_id, actor_id, session_id, region):
         self.opened_with = (memory_id, actor_id, session_id, region)
-        self.retrieval = retrieval
         self.messages, self.closed = [], False
 
     def __enter__(self):

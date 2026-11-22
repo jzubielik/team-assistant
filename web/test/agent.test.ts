@@ -100,7 +100,7 @@ describe("stopSession", () => {
 });
 
 describe("newSessionId", () => {
-  it("is session- and a UUID: 44 characters, within the Runtime's 33 to 100", () => {
+  it("is session- and a UUID: 44 characters, between the Runtime's 33 and Memory's 100", () => {
     const id = newSessionId();
     expect(id).toMatch(/^session-[0-9a-f-]{36}$/);
     expect(id).toHaveLength(44);

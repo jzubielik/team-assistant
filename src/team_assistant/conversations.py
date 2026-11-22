@@ -5,9 +5,9 @@ the request. A conversation is a Memory session of that actor: ``ListSessions`` 
 and its title is an event of its own (titles.py) found by its metadata. A history is the
 session's events as the Strands session manager stored them (``bedrock_agentcore`` 1.26.0,
 ``bedrock_converter.py``): each message is the JSON of a ``SessionMessage``, in a
-``conversational`` payload, or in a ``blob`` holding ``[json, role]`` when it is over 100,000
-characters. Only user and assistant text goes to the page: tool calls and tool results have no
-text block and are left out.
+``conversational`` payload, or in a ``blob`` holding ``[json, role]`` when it has 100,000
+characters or more. Only user and assistant text goes to the page: tool calls and tool
+results have no text block and are left out.
 """
 
 from __future__ import annotations

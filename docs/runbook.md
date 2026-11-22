@@ -101,22 +101,18 @@ the last one is closed, so an open one may still hold the first user's login.
 Check the environment and look into Memory:
 
 ```
-make smoke ENV=dev                               # fourteen PASS lines; alice and bob logged in, alice consented to GitHub
+make smoke ENV=dev                               # fifteen PASS lines; alice and bob logged in, alice consented to GitHub
 make memory ENV=dev USER=alice SESSION=<id>      # messages and long-term records of a user
-make measure ENV=dev                             # report in measurements/<date>-<env>.md (gitignored)
 ```
 
-Long-term records appear about a minute after a conversation (the strategies run in the
-background). `make smoke` therefore takes about two minutes: its long-term memory checks wait
-up to five minutes for a record. `make measure` runs four conversations as alice and waits up
-to five minutes per namespace, so it can take a quarter of an hour. Run `make measure` before
-`make smoke`, or a few minutes after it: records a smoke run causes appear about a minute
-after it ends, and the purge at the start of `make measure` would not see them yet.
+Long-term records appear some time after a conversation (the strategies run in the
+background). `make smoke` therefore takes a few minutes: each of its long-term memory checks
+waits up to five minutes for a record.
 
 `make smoke` makes the strategies store real records (one check asks the agent to sign its
 answers with a word). Its words start with `smk`, and it deletes the records holding them at
 its start and end (`purge: N record(s) ... deleted`); records extracted after one run are
-deleted at the start of the next. `make measure` deletes them before it starts.
+deleted at the start of the next.
 
 ## GitHub consent (once per user and deployment)
 
@@ -207,9 +203,10 @@ bootstraps of the account (`CDKToolkit`, other projects' qualifiers) are not tou
   marker must be deleted by hand (`aws bedrock-agentcore delete-memory-record`).
 - **The agent answers without what it should remember**: look in the Runtime's log for a
   line with `"event": "preferences_failed"` or `"event": "tool_failed"` (each names the error
-  type); then `make memory ... USER=<name> SESSION=<id>` shows whether the records exist. A
-  fact or an earlier conversation reaches the answer only when the model calls
-  `search_memory` or `recall_conversations`; `make measure` reports which tools it called.
+  type), or `"event": "records_not_found"` (Memory found no preference records); then
+  `make memory ... USER=<name> SESSION=<id>` shows whether the records exist. A fact or an
+  earlier conversation reaches the answer only when the model calls `search_memory` or
+  `recall_conversations`.
 - **`GITHUB_CLIENT_ID_<env> is not set`**: add the OAuth App's client id to `local.mk`.
 - **`WARNING ExplicitAuthFlows.1: 'ALLOW_TOKEN_EXCHANGE_IMPERSONATION' is not one of [...]`**
   at synth or deploy: CDK's validation predates Cognito's token exchange; the service accepts the

@@ -3,8 +3,9 @@
 - Conversation: the agent remembers a conversation, a stopped session is restored from
   Memory, nobody gets in without a token, a session id in use by one user is refused to
   another, and once that session is stopped the other user sees none of its messages.
-- Long-term memory: a preference stated in one session is followed in a new one, and another
-  user gets none of it.
+- Long-term memory: a preference stated in one session is followed in a new one, another
+  user gets none of it, and a fact stated in one session is found in a new one with the
+  search_memory tool.
 - GitHub: a user who consented gets issues through the vaulted token; a user who did not is
   asked to.
 - Gateway: every request goes through the gateway, and the same token sent straight to the
@@ -21,7 +22,7 @@ bucket refuses a direct request.
 
 Both users must be logged in (make login). Prints one line per check, PASS or FAIL, and exits
 1 when any check failed. Each run costs a handful of model calls. Long-term records are
-extracted asynchronously (about a minute), so the long-term memory checks poll for the
+extracted asynchronously, so the long-term memory checks poll for the
 record for up to WAIT_S seconds.
 """
 
@@ -80,9 +81,9 @@ def purge(client, memory_id: str, actors: list[str]) -> int:
     """Delete the long-term records smoke runs left behind; returns how many.
 
     The checks make the strategies extract real records (a signature word becomes a
-    preference), and they would then shape every later answer and every measurement. Records
-    are extracted about a minute after a run, so a record missed at the end of one run is
-    deleted at the start of the next, and make measure purges before it starts.
+    preference), and they would then shape every later answer. Records are extracted some
+    time after a run, so a record missed at the end of one run is deleted at the start of
+    the next.
     """
     deleted = 0
     for actor in actors:
@@ -212,11 +213,11 @@ def check_conversations(read: Read, user: str, session: str) -> Check:
     return True, f"{user}'s list has the smoke session, titled {shown(item['title'])}"
 
 
-def check_conversations_isolation(read: Read, user_a: str, user_b: str, session: str) -> Check:
-    """The other user's list holds none of the first user's sessions. The smoke session id is
-    left out of the comparison: both users asked with it (check "other user"), so each has a
-    session of their own under that id. The first user's other sessions have random ids
-    (check "new session"), which the other user cannot have."""
+def check_conversations_isolation(
+    read: Read, user_a: str, user_b: str, session: str, only_a: set[str]
+) -> Check:
+    """The other user's list holds none of the sessions only the first user used in this run.
+    Sessions of earlier runs are left out: both users used each run's smoke session id."""
     lists = {}
     # The other user is asked first. They used the smoke session id last, so the running
     # session is still theirs and need not be stopped before the read.
@@ -225,12 +226,12 @@ def check_conversations_isolation(read: Read, user_a: str, user_b: str, session:
         if event.get("type") != "conversations":
             return False, f"the agent answered {user} {shown(str(event))}"
         lists[user] = {item.get("session_id") for item in event.get("items", [])}
-    own = lists[user_a] - {session}
+    own = lists[user_a] & only_a
     if not own:
-        return False, f"{user_a}'s list has no session besides the smoke session (cannot compare)"
+        return False, f"{user_a}'s list has none of the sessions of this run (cannot compare)"
     if own & lists[user_b]:
         return False, f"{user_b}'s list holds {len(own & lists[user_b])} of {user_a}'s sessions"
-    return True, f"{user_b}'s list holds none of {user_a}'s {len(own)} other session(s)"
+    return True, f"{user_b}'s list holds none of {user_a}'s {len(own)} session(s) of this run"
 
 
 def check_history(read: Read, user: str, session: str, word: str) -> Check:
@@ -345,6 +346,29 @@ def until_consent(events) -> list[dict]:
     return found
 
 
+FACT_QUESTION = "Which host caused the billing outage last night? Reply with the host name only."
+
+
+def check_memory_search(
+    ask: Ask, ask_events: AskEvents, records_of: RecordsOf, wait: Wait, user: str, word: str
+) -> Check:
+    """A fact stated in one session is found in a new one, through the search_memory tool."""
+    ask(user, new_session_id(), f"Last night's billing outage was caused by a full disk on {word}.")
+    if wait(lambda: with_word(records_of(user, "facts"), word)) is None:
+        return False, f"no record with the word after {WAIT_S} s in {user}'s facts namespace"
+    events = ask_events(user, new_session_id(), FACT_QUESTION)
+    called = [str(e.get("name")) for e in events if e.get("type") == "tool"]
+    if "search_memory" not in called:
+        return (
+            False,
+            f"the model did not call search_memory (called: {', '.join(called) or 'none'})",
+        )
+    text = answer_text(events)
+    if word not in text.lower():
+        return False, f"the answer does not hold the fact; it was: {shown(text)}"
+    return True, "a new session finds a fact of an earlier one with search_memory"
+
+
 def check_github_tool(ask_events: AskEvents, user_a: str, user_b: str) -> Check:
     first = ask_events(user_a, new_session_id(), ISSUES_PROMPT)
     if any(e.get("type") == "auth_url" for e in first):
@@ -365,7 +389,8 @@ def check_github_tool(ask_events: AskEvents, user_a: str, user_b: str) -> Check:
 
 
 def run(checks: list[tuple[str, Callable[[], Check]]], out=None) -> int:
-    """Run the checks in order; a check that raises fails. Returns the exit code."""
+    """Run the checks in order; a check that raises fails, and the next ones still run.
+    Returns the exit code."""
     out = out or sys.stdout
     failed = 0
     for name, check in checks:
@@ -373,6 +398,8 @@ def run(checks: list[tuple[str, Callable[[], Check]]], out=None) -> int:
             passed, detail = check()
         except (chat.ChatError, auth.LoginRequired) as error:
             passed, detail = False, str(error)
+        except Exception as error:  # noqa: BLE001 - e.g. an AWS error of the operator's call
+            passed, detail = False, f"{type(error).__name__}: {error}"
         failed += not passed
         print(f"{'PASS' if passed else 'FAIL'}  {name}: {detail}", file=out)
     return 1 if failed else 0
@@ -402,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
     stop_url = chat.stop_url(args.gateway_url, args.gateway_target)
     direct_url = chat.runtime_url(args.region, args.runtime_arn)
     session, word, signature = new_session_id(), random_word(), random_word()
+    fact = random_word()
 
     def token(user: str) -> str:
         return auth.access_token(endpoints, args.env, user)
@@ -409,12 +437,14 @@ def main(argv: list[str] | None = None) -> int:
     # The agent keeps a session id to the user who used it first, for as long as the session
     # runs. Before another user gets the same id, the session is stopped.
     users: dict[str, str] = {}
+    used: dict[str, set[str]] = {}  # session id -> the users who used it in this run
 
     def switch_to(user: str, session_id: str) -> None:
         previous = users.get(session_id)
         if previous not in (None, user):
             stop(previous, session_id)
         users[session_id] = user
+        used.setdefault(session_id, set()).add(user)
 
     def ask_running(user: str, session_id: str, prompt: str) -> str:
         return answer_text(chat.invoke(url, token(user), session_id, prompt))
@@ -424,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         return ask_running(user, session_id, prompt)
 
     def ask_events(user: str, session_id: str, prompt: str) -> list[dict]:
+        used.setdefault(session_id, set()).add(user)
         return until_consent(chat.invoke(url, token(user), session_id, prompt))
 
     def stop(user: str, session_id: str) -> None:
@@ -447,26 +478,25 @@ def main(argv: list[str] | None = None) -> int:
         events = list(chat.invoke(url, token(user), session_id, None, body=body))
         return events[0] if events else {}
 
-    def client():
-        import boto3
+    import boto3
 
-        session = boto3.Session(profile_name=args.profile, region_name=args.region)
-        return session.client("bedrock-agentcore")
+    aws = boto3.Session(profile_name=args.profile, region_name=args.region)
+    client = aws.client("bedrock-agentcore")
 
     def texts_of(user: str, session_id: str) -> list[str]:
         actor = auth._claims(token(user))["sub"]
-        events = memory.list_events(client(), args.memory_id, actor, session_id)
+        events = memory.list_events(client, args.memory_id, actor, session_id)
         return [text for _, _, text in memory.messages(events)]
 
     def records_of(user: str, strategy: str) -> list[str]:
         actor = auth._claims(token(user))["sub"]
         namespace = memory.namespace_of(NAMESPACES[strategy], actor, "")
-        found = memory.list_records(client(), args.memory_id, namespace)
+        found = memory.list_records(client, args.memory_id, namespace)
         return [r.get("content", {}).get("text", "") for r in found]
 
     a, b = args.user_a, args.user_b
     actors = [auth._claims(token(user))["sub"] for user in (a, b)]
-    print(f"purge: {purge(client(), args.memory_id, actors)} record(s) of earlier runs deleted")
+    print(f"purge: {purge(client, args.memory_id, actors)} record(s) of earlier runs deleted")
     code = run(
         [
             ("same session", lambda: check_same_session(ask, a, session, word)),
@@ -497,8 +527,14 @@ def main(argv: list[str] | None = None) -> int:
             ),
             ("isolation", lambda: check_isolation(ask, records_of, a, b, signature)),
             (
+                "memory search",
+                lambda: check_memory_search(ask, ask_events, records_of, wait_for_record, a, fact),
+            ),
+            (
                 "conversations isolation",
-                lambda: check_conversations_isolation(read, a, b, session),
+                lambda: check_conversations_isolation(
+                    read, a, b, session, {s for s, u in used.items() if u == {a}}
+                ),
             ),
             ("github tool", lambda: check_github_tool(ask_events, a, b)),
             (
@@ -507,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         ]
     )
-    print(f"purge: {purge(client(), args.memory_id, actors)} record(s) of this run deleted")
+    print(f"purge: {purge(client, args.memory_id, actors)} record(s) of this run deleted")
     return code
 
 

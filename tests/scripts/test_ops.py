@@ -243,7 +243,7 @@ def test_destroy_with_an_empty_repository_deletes_nothing(stubs):
     assert image_deletions(calls) == []
 
 
-@pytest.mark.parametrize("command", ["smoke", "measure"])
+@pytest.mark.parametrize("command", ["smoke"])
 def test_a_missing_stack_stops_at_the_first_output_with_one_message(stubs, command):
     # A failed $(stack_output ...) inside an argument list does not stop the script, which
     # would then start Python with empty arguments.

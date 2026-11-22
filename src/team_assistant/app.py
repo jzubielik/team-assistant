@@ -39,11 +39,12 @@ from typing import Any
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
+from strands.hooks import BeforeToolCallEvent
 from strands.models import BedrockModel, Model
 from strands.types.exceptions import ContextWindowOverflowException, ModelThrottledException
 
 from team_assistant import events
-from team_assistant.config import AgentConfig, load_config, return_url
+from team_assistant.config import MAX_TURNS, AgentConfig, load_config, return_url
 from team_assistant.consent import ConsentError, complete_consent
 from team_assistant.conversations import history, list_conversations
 from team_assistant.github import github_tools
@@ -52,7 +53,7 @@ from team_assistant.logs import configure_stdout
 from team_assistant.memory import session_manager
 from team_assistant.prompts import system_prompt
 from team_assistant.recall import list_preferences, memory_tools
-from team_assistant.titles import title_once
+from team_assistant.titles import make_title, store_title
 
 app = BedrockAgentCoreApp()
 log = logging.getLogger("team_assistant")
@@ -109,6 +110,21 @@ class QuietBedrockModel(QuietErrors, BedrockModel):
     """The Bedrock model the agent uses."""
 
 
+def _refuse_wrong_arguments(event: BeforeToolCallEvent) -> None:
+    """Cancel a tool call whose arguments do not fit the tool's parameters.
+
+    Strands would otherwise copy its validation error, which quotes the arguments, into the
+    status of the tool's span; a cancelled call has no span.
+    """
+    metadata = getattr(event.selected_tool, "_metadata", None)  # strands-agents 1.64.0
+    if metadata is None:
+        return
+    try:
+        metadata.validate_input(event.tool_use["input"])
+    except ValueError:
+        event.cancel_tool = "Refused: the arguments do not fit the tool's parameters."
+
+
 def build_agent(
     config: AgentConfig,
     session_mgr: Any,
@@ -119,7 +135,7 @@ def build_agent(
     preferences: list[str] | None = None,
 ) -> Agent:
     """The Strands agent for one request. Tests pass their own ``model``."""
-    return Agent(
+    agent = Agent(
         model=model
         or QuietBedrockModel(model_id=config.model_id, max_tokens=config.max_output_tokens),
         system_prompt=system_prompt(preferences or []),
@@ -136,6 +152,8 @@ def build_agent(
         # a trace can be found by user or by session. Ids only: no content goes into spans.
         trace_attributes={"actor.id": actor, "session.id": session_id},
     )
+    agent.hooks.add_callback(BeforeToolCallEvent, _refuse_wrong_arguments)
+    return agent
 
 
 def _log(outcome: str, actor: str | None, session: str | None, usage: dict, **extra: str) -> None:
@@ -143,37 +161,41 @@ def _log(outcome: str, actor: str | None, session: str | None, usage: dict, **ex
     log.info(json.dumps({**line, **usage, **extra}))
 
 
-def _default_tools(on_auth_url: Callable[[str], None], state: str, return_to: str) -> list:
-    return github_tools(on_auth_url, state, return_to)
-
-
 def _default_recall(
-    region: str, memory_id: str, actor: str, session_id: str, limit: int
+    client: Any, memory_id: str, actor: str, session_id: str, config: AgentConfig
 ) -> tuple[list[str], list]:
     """The user's preferences for the system prompt and the memory tools of this request.
 
     If the listing fails, the request is answered without preferences; the log names the
     error's type only (its message can quote a record).
     """
-    client = _memory_client(region)
     try:
-        preferences = list_preferences(client, memory_id, actor, limit)
+        preferences = list_preferences(client, memory_id, actor, config.max_preferences)
     except Exception as error:  # noqa: BLE001
         line = {"event": "preferences_failed", "actor": actor, "session": session_id}
         log.warning(json.dumps({**line, "error_type": type(error).__name__}))
         preferences = []
-    return preferences, memory_tools(client, memory_id, actor, session_id)
+    tools = memory_tools(client, memory_id, actor, config.facts_top_k, config.summaries_top_k)
+    return preferences, tools
 
 
 def _store_title(
-    region: str, model_id: str, memory_id: str, actor: str, session: str, prompt: str, answer: str
+    client: Any,
+    region: str,
+    model_id: str,
+    memory_id: str,
+    actor: str,
+    session: str,
+    prompt: str,
+    answer: str,
 ) -> None:
-    """Title the session after its first answer (titles.py), with the agent's own clients."""
+    """Title the session after its first answer (titles.py)."""
     import boto3
 
     converse = boto3.client("bedrock-runtime", region_name=region).converse
-    memory_client = boto3.client("bedrock-agentcore", region_name=region)
-    title_once(memory_client, converse, model_id, memory_id, actor, session, prompt, answer)
+    title = make_title(converse, model_id, prompt, answer)
+    if title:
+        store_title(client, memory_id, actor, session, title)
 
 
 async def _consent(
@@ -210,7 +232,7 @@ async def _consent(
 
 
 def _memory_client(region: str) -> Any:
-    import boto3  # the agent's own role reads Memory (ListSessions, ListEvents)
+    import boto3  # the agent's own role calls Memory
 
     return boto3.client("bedrock-agentcore", region_name=region)
 
@@ -264,7 +286,7 @@ async def respond(
     make_session_manager: Callable[..., Any] | None = None,
     make_tools: Callable[[Callable[[str], None], str], list] | None = None,
     complete: Callable[..., None] = complete_consent,
-    make_memory_client: Callable[[str], Any] = _memory_client,
+    make_memory_client: Callable[[str], Any] | None = None,
     store_title: Callable[..., None] | None = None,
     recall: Callable[..., tuple[list[str], list]] | None = None,
 ) -> AsyncIterator[dict]:
@@ -274,7 +296,7 @@ async def respond(
             yield event
         return
     if isinstance(payload, dict) and ("conversations" in payload or "history" in payload):
-        async for event in _read_memory(payload, context, make_memory_client):
+        async for event in _read_memory(payload, context, make_memory_client or _memory_client):
             yield event
         return
     usage = {"input_tokens": 0, "output_tokens": 0}
@@ -322,13 +344,16 @@ async def respond(
         def on_auth_url(url: str) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, ("auth_url", url))
 
-        tools = (make_tools or partial(_default_tools, return_to=return_to))(on_auth_url, state)
+        tools = (make_tools or partial(github_tools, return_url=return_to))(on_auth_url, state)
+        # One Memory client for the preferences, the memory tools and the title.
+        client = (make_memory_client or _memory_client)(region)
         preferences, memory = await asyncio.to_thread(
-            recall or _default_recall, region, memory_id, actor, session_id, config.max_preferences
+            recall or _default_recall, client, memory_id, actor, session_id, config
         )
         tools = [*tools, *memory]
         called: set[str] = set()
-        with open_session(memory_id, actor, session_id, region, config.retrieval) as session_mgr:
+        stopped = False
+        with open_session(memory_id, actor, session_id, region) as session_mgr:
             agent = build_agent(config, session_mgr, actor, session_id, model, tools, preferences)
             # The session manager has restored the conversation into the agent: no message
             # means this is the session's first answer, the only one that gets a title. (Asking
@@ -338,7 +363,7 @@ async def respond(
 
             async def run() -> None:
                 try:
-                    async for event in agent.stream_async(prompt):
+                    async for event in agent.stream_async(prompt, limits={"turns": MAX_TURNS}):
                         await queue.put(("agent", event))
                 finally:
                     await queue.put(("end", None))
@@ -360,6 +385,7 @@ async def respond(
                         called.add(use["toolUseId"])
                         yield events.tool(str(use.get("name", "")))
                 elif "result" in event:
+                    stopped = event["result"].stop_reason == "limit_turns"
                     total = event["result"].metrics.accumulated_usage
                     usage = {
                         "input_tokens": total.get("inputTokens", 0),
@@ -372,12 +398,17 @@ async def respond(
         _log("failed", actor, session_id, usage, error_type=error_type)
         yield events.error("the agent could not answer; the operator can find the cause in the log")
         return
+    if stopped:
+        _log("failed", actor, session_id, usage, error_type="limit_turns")
+        yield events.error("the answer took too many steps; ask for less in one message")
+        return
     # The title before done, so the page's list, refreshed on done, shows it. A failure costs
     # the title only, never the answer; the log names the error type.
     try:
         if first_answer:
             await asyncio.to_thread(
                 store_title or _store_title,
+                client,
                 region,
                 config.model_id,
                 memory_id,

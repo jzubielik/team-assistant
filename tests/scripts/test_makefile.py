@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGETS = (
     "help", "runner", "shell", "arm64", "setup", "check", "synth",
     "bootstrap", "diff", "deploy", "destroy", "status", "user", "login", "chat", "ask",
-    "memory", "smoke", "measure", "github", "web", "web-sync", "unbootstrap",
+    "memory", "smoke", "github", "web", "web-sync", "unbootstrap",
     "hooks", "leaks", "lint", "audit",
 )  # fmt: skip
 # Variables that must not leak from the developer's shell (or from an outer make) into a test.
