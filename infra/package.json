@@ -2,6 +2,6 @@
   "name": "team-assistant-infra",
   "private": true,
   "devDependencies": {
-    "aws-cdk": "2.1148.0"
+    "aws-cdk": "2.1148.1"
   }
 }
