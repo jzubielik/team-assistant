@@ -2,8 +2,8 @@
 # Logic lives in scripts/ops.sh; targets stay thin.
 # Targets that touch AWS need ENV (an environment name, e.g. dev) on the command line, and
 # PROFILE, REGION and ACCOUNT_<env> on the command line or in local.mk: make deploy ENV=dev
-# Every target except help, hooks, runner, shell, arm64 and those that use a saved login
-# (login, chat, ask, memory, smoke, measure) runs in the tool runner image
+# Every target except help, hooks, runner, shell, arm64, compare and those that use a saved
+# login (login, chat, ask, memory, smoke, seed, eval) runs in the tool runner image
 # (docker/runner.Dockerfile); NATIVE=1 runs it directly on the host instead.
 
 .DEFAULT_GOAL := help
@@ -74,6 +74,19 @@ endif
 ifeq ($(origin PROMPT),command line)
 TA_PROMPT := $(PROMPT)
 endif
+# make eval LABEL=<name> RUNS=<n>, make compare A=<result> B=<result>: command line only.
+ifeq ($(origin LABEL),command line)
+TA_LABEL := $(LABEL)
+endif
+ifeq ($(origin RUNS),command line)
+TA_RUNS := $(RUNS)
+endif
+ifeq ($(origin A),command line)
+TA_A := $(A)
+endif
+ifeq ($(origin B),command line)
+TA_B := $(B)
+endif
 # make web MOCK=1: the page with the mock agent instead of a deployed environment.
 ifeq ($(origin MOCK),command line)
 TA_MOCK := $(MOCK)
@@ -84,7 +97,7 @@ TA_PRINT_URL := $(PRINT)
 endif
 
 export ENV PROFILE REGION ACCOUNT GITHUB_CLIENT_ID LOGIN_SUFFIX CONFIG_ORIGINS TA_USER TA_SESSION TA_PROMPT TA_PRINT_URL \
-	TA_MOCK
+	TA_MOCK TA_LABEL TA_RUNS TA_A TA_B
 # The AWS profile and region come from PROFILE and REGION only.
 unexport AWS_PROFILE AWS_DEFAULT_PROFILE AWS_REGION AWS_DEFAULT_REGION
 
@@ -156,7 +169,8 @@ HOST_CHECK = command -v docker >/dev/null || { echo "error: docker not found: in
 
 # ---- Targets -------------------------------------------------------------------------------
 .PHONY: help runner runner-image shell arm64 setup check synth bootstrap diff deploy destroy status \
-	user login chat ask memory smoke measure github web web-sync unbootstrap hooks leaks lint audit
+	user login chat ask memory smoke seed eval compare github web web-sync unbootstrap hooks leaks \
+	lint audit
 
 help: ## Show this help (default target)
 	@echo "team-assistant: operator targets"
@@ -244,8 +258,14 @@ memory: ## Show what Memory stores for USER=<name> SESSION=<id> (operator's view
 smoke: ## End-to-end checks against the deployed environment as alice and bob (runs on the host)
 	@$(require_env)$(OPS) smoke
 
-measure: ## Measure the long-term strategies as alice; writes measurements/<date>-<env>.md, not committed (runs on the host)
-	@$(require_env)$(OPS) measure
+seed: ## Fill a user's long-term memory with the conversations of scripts/seed.toml; the stored records go to measurements/<date>-<env>-<user>-seed.json, not committed (runs on the host)
+	@$(require_env)$(OPS) seed
+
+eval: ## Ask the seeded USER the cases of scripts/evals.toml, RUNS times each (default 1); the result goes to measurements/<date>-<time>-<env>-<LABEL>.json, not committed (runs on the host)
+	@$(require_env)$(require_user)$(if $(TA_LABEL),,$(error LABEL is required for 'eval': make eval ENV=dev USER=<name> LABEL=<name>))$(OPS) eval
+
+compare: ## Compare two results of make eval: make compare A=<result> B=<result> (runs on the host)
+	@$(if $(and $(TA_A),$(TA_B)),,$(error A and B are required for 'compare': make compare A=<result> B=<result>))$(OPS) compare
 
 hooks: ## Use the committed git hooks in .githooks (once per clone)
 	@if [ "$$(git config --get core.hooksPath)" = .githooks ]; then \
@@ -260,5 +280,5 @@ leaks: ## Scan every commit with gitleaks (.gitleaks.toml) and trufflehog (verif
 lint: ## Lint workflows (actionlint, zizmor), Dockerfiles (hadolint) and shell scripts (shellcheck); part of make check
 	@$(RUN) echo "==> lint: actionlint, zizmor, hadolint, shellcheck" && NATIVE=1 scripts/scan.sh lint
 
-audit: ## pip-audit the locked Python dependencies (network: advisory database)
-	@$(RUN) echo "==> audit: pip-audit on the lock files" && NATIVE=1 scripts/scan.sh audit
+audit: ## pip-audit and npm audit of the locked Python and npm dependencies (network: advisory databases)
+	@$(RUN) echo "==> audit: pip-audit and npm audit on the lock files" && NATIVE=1 scripts/scan.sh audit

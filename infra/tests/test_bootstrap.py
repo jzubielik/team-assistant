@@ -77,7 +77,7 @@ DENIES = [s for policy in EXECUTION_POLICIES for s in statements(policy, "Deny")
 
 
 def test_templates_hold_only_managed_policies():
-    for template, count in ((EXECUTION, 4), (BOUNDARY, 1)):
+    for template, count in ((EXECUTION, 5), (BOUNDARY, 1)):
         assert {r["Type"] for r in template["Resources"].values()} == {"AWS::IAM::ManagedPolicy"}
         assert len(template["Resources"]) == count
 
@@ -116,6 +116,7 @@ EVERY_RESOURCE = {
     "MemoryCreate": "the memory does not exist yet; the request must carry the project tag",
     "GatewayCreate": "CreateGateway supports no resource type; the request must carry the tag",
     "GithubSecretPlaceholder": "GetRandomPassword supports no resource type; returns random text",
+    "GuardrailCreate": "CreateGuardrail has no guardrail resource; the request must carry the tag",
 }
 # Creates authorized on <type>/* because the id does not exist yet; each requires the tag.
 TAGGED_CREATES = {"RuntimeCreate", "RuntimeTagOnCreate"}
@@ -290,6 +291,33 @@ def test_gateways_are_created_with_the_project_tag_and_managed_by_name():
     assert "bedrock-agentcore:GetWorkloadAccessToken" not in actions
 
 
+def test_distributions_are_created_with_the_project_tag_and_changed_only_with_it():
+    # A distribution's ARN holds only a generated id, so the tag is the only way to tell this
+    # project's distribution from another one of the account.
+    by_sid = {s["Sid"]: s for s in ALLOWS}
+    changing = {
+        "cloudfront:CreateDistribution": "WebDistributionCreate",
+        "cloudfront:CreateDistributionWithTags": "WebDistributionCreate",
+        "cloudfront:UpdateDistribution": "WebDistribution",
+        "cloudfront:DeleteDistribution": "WebDistribution",
+        "cloudfront:UntagResource": "WebDistribution",
+    }
+    for action, sid in changing.items():
+        holders = {s["Sid"] for s in ALLOWS if action in as_list(s["Action"])}
+        assert holders == {sid}, action
+    tagging = {s["Sid"] for s in ALLOWS if "cloudfront:TagResource" in as_list(s["Action"])}
+    assert tagging == {"WebDistributionCreate", "WebDistribution"}
+    create = by_sid["WebDistributionCreate"]["Condition"]
+    assert create == {"StringEquals": {"aws:RequestTag/project": "team-assistant"}}
+    assert by_sid["WebDistribution"]["Condition"] == PROJECT_TAG
+    # Reads have no condition (a deleted distribution has no tag) and change nothing.
+    read = by_sid["WebDistributionRead"]
+    assert "Condition" not in read
+    assert all(a.split(":")[1].startswith(("Get", "List")) for a in read["Action"])
+    for sid in ("WebDistributionCreate", "WebDistribution", "WebDistributionRead"):
+        assert text(by_sid[sid]["Resource"]).endswith(":distribution/*")
+
+
 BOUNDARY_ALLOWS = statements(next(iter(policies(BOUNDARY).values())), "Allow")
 # Boundary statements that cannot name this environment's resources, with the reason.
 BOUNDARY_WIDE = {
@@ -299,6 +327,7 @@ BOUNDARY_WIDE = {
     "Model": "the role's own policy names the configured model",
     "Traces": "the actions have no resource",
     "Metrics": "limited by namespace",
+    "GuardToolResults": "a guardrail ARN holds a generated id; limited by the project and env tags",
 }
 
 
@@ -350,6 +379,7 @@ def test_boundary_covers_every_action_of_the_stacks_role():
         for resource in template["Resources"].values()
         if resource["Type"] == "AWS::IAM::Policy"
         for statement in resource["Properties"]["PolicyDocument"]["Statement"]
+        if statement["Effect"] == "Allow"
         for action in as_list(statement["Action"])
     }
     allowed = {a for s in BOUNDARY_ALLOWS for a in as_list(s["Action"])}

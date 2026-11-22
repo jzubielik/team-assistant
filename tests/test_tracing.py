@@ -15,8 +15,8 @@ from strands import tool
 from strands.telemetry import tracer as strands_tracer
 
 from conftest import FakeModel, collect
-from team_assistant import app
-from team_assistant.config import AgentConfig
+from team_assistant import app, prompts
+from team_assistant.config import MAX_TURNS, AgentConfig
 
 CONFIG = AgentConfig("fake-model", 100, 30)
 REDACT = "gen_ai_unredacted_attributes="
@@ -105,8 +105,58 @@ def test_spans_hold_no_prompt_answer_or_tool_text(monkeypatch, context, managers
     spans = traced(monkeypatch, REDACT, context, managers, model, tools=[lookup])
     text = everything_in(spans)
     assert any("lookup" in span.name for span in spans), [span.name for span in spans]
-    for secret in (PROMPT, ANSWER, TOOL_INPUT, TOOL_OUTPUT, app.SYSTEM_PROMPT):
+    for secret in (PROMPT, ANSWER, TOOL_INPUT, TOOL_OUTPUT, prompts.SYSTEM_PROMPT):
         assert secret not in text, secret
+
+
+def test_arguments_of_a_wrong_type_stay_out_of_spans_and_the_tool_does_not_run(
+    monkeypatch, context, managers, agent_env
+):
+    ran = []
+
+    @tool
+    def count_things(number: int) -> str:
+        """Count."""
+        ran.append(number)
+        return TOOL_OUTPUT
+
+    class WrongType(ToolThenTextModel):
+        tool_name, tool_input = "count_things", f'{{"number": "{TOOL_INPUT}"}}'
+
+    model = WrongType(chunks=(ANSWER,))
+    spans = traced(monkeypatch, REDACT, context, managers, model, tools=[count_things])
+    assert not ran
+    assert TOOL_INPUT not in everything_in(spans)
+    # The model is told why, in a fixed text.
+    assert "Refused: the arguments do not fit" in str(model.calls[-1]["messages"])
+
+
+def test_a_request_that_keeps_calling_tools_ends_with_an_error_after_the_turn_limit(
+    context, managers, agent_env
+):
+    class NeverAnswers(ToolThenTextModel):
+        asked = 0
+
+        async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+            self.calls.clear()
+            NeverAnswers.asked += 1
+            async for event in super().stream(messages, tool_specs, system_prompt, **kwargs):
+                yield event
+
+    stream = app.respond(
+        {"prompt": PROMPT},
+        context,
+        config=CONFIG,
+        model=NeverAnswers(),
+        make_session_manager=managers,
+        make_tools=lambda on_auth_url, state: [lookup],
+    )
+    events = collect(stream)
+    assert NeverAnswers.asked == MAX_TURNS
+    assert events[-1] == {
+        "type": "error",
+        "message": "the answer took too many steps; ask for less in one message",
+    }
 
 
 def test_a_failing_github_tool_leaves_no_exception_text_in_spans(
@@ -147,7 +197,7 @@ def test_without_the_setting_the_same_spans_would_hold_the_content(
 
 
 def test_trace_attributes_are_only_the_two_ids(managers):
-    agent = app.build_agent(CONFIG, managers("m", "u", "s", "r", {}), "u-1", "s-1", FakeModel())
+    agent = app.build_agent(CONFIG, managers("m", "u", "s", "r"), "u-1", "s-1", FakeModel())
     assert agent.trace_attributes == {"actor.id": "u-1", "session.id": "s-1"}
 
 

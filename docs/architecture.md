@@ -17,6 +17,7 @@ flowchart TB
         mem["AgentCore Memory<br/>events, preferences, facts, summaries"]
         model["Bedrock model"]
         idn["AgentCore Identity<br/>GitHub provider, token vault"]
+        guard["Bedrock guardrail<br/>prompt-attack filter"]
     end
     github["GitHub API"]
 
@@ -30,6 +31,7 @@ flowchart TB
     agent --> mem
     agent --> model
     agent -->|user's GitHub token| idn
+    agent -->|GitHub tool results| guard
     idn --> github
 ```
 
@@ -38,9 +40,12 @@ The agent's modules:
 | Module | Role |
 |---|---|
 | `identity.py` | user id = the `sub` claim of the token |
-| `memory.py` | history of (user id, session id); long-term records into the prompt |
+| `memory.py` | history of (user id, session id) |
+| `recall.py` | the user's preferences for the system prompt; tools `search_memory`, `recall_conversations` |
+| `prompts.py` | the system prompt: fixed instructions, then the user's preferences |
 | `app.py` | model call, streamed answer |
 | `github.py` | tools `list_issues`, `get_issue`, with the user's GitHub token |
+| `guard.py` | checks the GitHub tools' results with the guardrail before the model reads them |
 | `consent.py` | completes a GitHub consent |
 | `conversations.py` | the page's conversation list and history |
 | `titles.py` | a title after a session's first answer |
@@ -48,7 +53,7 @@ The agent's modules:
 | `events.py` | the stream events sent to the client |
 | `logs.py` | log lines of other libraries without their values |
 
-Memory keeps events for 30 days. About a minute after the messages, three strategies extract
+Memory keeps events for 30 days. In the background, three strategies extract
 long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
 `/summaries/{actorId}/{sessionId}/`. The GitHub client secret is in Secrets Manager.
 
@@ -64,16 +69,33 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
    client and the audience (the token must have been issued for this environment's agent).
    A request without a valid token is refused with 401 at the gateway or here.
 3. The Runtime routes the request to the container of that session, starting one if needed.
-4. `app.py` checks the prompt, reads the user id from the token (`identity.py`) and opens the
-   history for (user id, session id) in AgentCore Memory (`memory.py`).
-5. The session manager searches the user's preference and fact namespaces with the new message
-   (`RetrieveMemoryRecords`, limits from `[memory.retrieval.*]` in `config/agent.toml`) and
-   prepends what it finds to that message inside `<user_context>`. A failed search is logged as
-   a WARNING and the answer goes on without those records.
+4. `app.py` checks the prompt, reads the user id from the token (`identity.py`), refuses a
+   session id that another user used first in this container, and opens the history for
+   (user id, session id) in AgentCore Memory (`memory.py`).
+5. `recall.py` lists the user's newest preference records (`ListMemoryRecords`, at most
+   `max_preferences` from `config/agent.toml`); they go into the system prompt after the fixed
+   instructions, so the start of a user's requests stays the same from turn to turn. Facts and
+   summaries are not put into the prompt: the model calls `search_memory` with a query it
+   writes from the conversation (`RetrieveMemoryRecords` over the user's facts), or, for a
+   question about earlier conversations, `recall_conversations` (`RetrieveMemoryRecords` over
+   the user's summaries).
+   One call returns at most `facts_top_k` facts or `summaries_top_k` summaries
+   (`config/agent.toml`). A result that reaches the limit says so and tells the model to
+   search again for each part of the question. A summary repeats what the assistant
+   answered, so summaries are never returned as facts.
+   If a read fails, the request is answered without those records.
 6. The Strands agent sends the history and the new message to the model and streams the answer
-   back as server-sent events; the session manager stores both messages as events.
-7. About a minute later, outside the request, the three strategies extract long-term records
-   from the new events. Summaries are kept for the operator (`make memory`), never retrieved.
+   back as server-sent events; the session manager stores both messages as events. A request
+   gets at most six turns (a model call and the tool calls it asks for); one whose sixth turn
+   still asks for a tool ends with an error event. The result of a GitHub tool goes to the
+   environment's guardrail first (`guard.py`, filter `PROMPT_ATTACK`); a result it flags, or
+   one that cannot be checked, is replaced by a refusal before the model reads it. Before a
+   model call that would fill 70 % of the model's context window, the agent first replaces
+   the oldest messages by a summary the same model writes (one more model call); the summary
+   is stored with the agent's state and restored with the session. The stored events, and so
+   the history the web page shows, stay complete.
+7. Later, outside the request, the three strategies extract long-term records
+   from the new events.
 8. One log line records the user id, the session id and the token counts; never the content.
 
 ## GitHub consent, the first time a user asks for issues
@@ -105,7 +127,8 @@ The return URL is registered on the Runtime's workload identity by `make deploy`
    the agent's audience, the same app client. Tokens stay in the tab's `sessionStorage`.
 3. Messages go to `<GatewayUrl>/agent/invocations` with `client: "web"` (`"web-local"` on the
    development server); the answer streams as
-   server-sent events and is rendered from Markdown (raw HTML, images and non-http links off).
+   server-sent events and is rendered from Markdown (raw HTML and images off, links only to
+   `https://github.com`).
 4. `{"conversations": {}}` and `{"history": {}}` ask the agent for the user's sessions
    (`ListSessions`, titles from a title event) and one session's turns (`ListEvents`); no model
    call, the actor is always the token's. After a session's first answer the agent asks the
@@ -121,7 +144,7 @@ The return URL is registered on the Runtime's workload identity by `make deploy`
 |---|---|---|
 | `team-assistant-cdk-policies`, `TeamAssistantToolkit` | the CDK bootstrap of this project: deploy permissions, assets bucket, image repository | once per account and region |
 | `team-assistant-<env>-boundary` | the permissions boundary of the environment's roles | with the environment |
-| `TeamAssistant-<env>` | user pool, app client, login domain and style, resource server (the audience), Memory, Runtime, the agent's role, the gateway with its target and role, the token exchange provider and its placeholder secret, GitHub credential provider and its client secret; the page's bucket, CloudFront distribution, origin access control and response headers policy | with the environment |
+| `TeamAssistant-<env>` | user pool, app client, login domain and style, resource server (the audience), Memory, the guardrail, Runtime, the agent's role, the gateway with its target and role, the token exchange provider and its placeholder secret, GitHub credential provider and its client secret; the page's bucket, CloudFront distribution, origin access control and response headers policy | with the environment |
 | (none) | the GitHub OAuth App, created by hand in GitHub; the token vault, one per account and region, created by AgentCore | outlast the environment |
 
 ## Not built

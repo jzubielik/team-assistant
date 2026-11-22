@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "agent.toml"
@@ -11,20 +11,18 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "agent.toml"
 EXPIRY_DAYS_MIN, EXPIRY_DAYS_MAX = 7, 365
 _TOP_LEVEL = {"model_id", "max_output_tokens", "memory", "tracing"}
 _TRACING = {"enabled"}
-_MEMORY = {"event_expiry_days", "retrieval"}
-_RETRIEVAL = {"top_k", "relevance_score"}
-# Limits of RetrievalConfig in bedrock-agentcore 1.26.0
-# (memory/integrations/strands/config.py): top_k > 0 and <= 1000, relevance_score 0.0 to 1.0.
-TOP_K_MAX = 1000
-# Stored for the operator, never put into the prompt.
-NOT_RETRIEVED = {"summaries"}
+_MEMORY = {"event_expiry_days", "max_preferences", "facts_top_k", "summaries_top_k"}
+# Upper limit of memory.max_preferences: each record is a line of the system prompt.
+MAX_PREFERENCES = 100
+# Upper limit of memory.facts_top_k and memory.summaries_top_k: the largest topK that
+# RetrieveMemoryRecords accepts.
+TOP_K_LIMIT = 100
+# Both when the key is absent.
+TOP_K_DEFAULT = 5
+# The most turns of one request (Strands ``limits``). A turn is one model call and the tool
+# calls it asks for.
+MAX_TURNS = 6
 
-# Where each long-term strategy stores its records, keyed by strategy name. It lives here, not
-# in memory.py, because the CDK app imports this module and has no bedrock-agentcore package.
-# The stack, the retrieval settings and the operator scripts all read it, so they cannot
-# disagree. {actorId} and {sessionId} are filled in by the service; the leading and trailing
-# slash keep one actor's prefix from matching another's (AgentCore devguide, "Memory
-# organization").
 # Where the browser returns after a user's consent in GitHub: a listener of that user's own
 # make chat (scripts/chat.py). make deploy registers it on the agent's workload identity, and the
 # agent names it in every token request. Users have no AWS credentials,
@@ -48,6 +46,12 @@ def return_url(client: object, web_url: str | None) -> str:
     raise ValueError(f"unknown client; expected one of {', '.join(CLIENTS)}")
 
 
+# Where each long-term strategy stores its records, keyed by strategy name. It lives here, not
+# in memory.py, because the CDK app imports this module and has no bedrock-agentcore package.
+# The stack, the agent and the operator scripts all read it, so they cannot
+# disagree. {actorId} and {sessionId} are filled in by the service; the leading and trailing
+# slash keep one actor's prefix from matching another's (AgentCore devguide, "Memory
+# organization").
 NAMESPACES = {
     "preferences": "/preferences/{actorId}/",
     "facts": "/facts/{actorId}/",
@@ -57,44 +61,18 @@ NAMESPACES = {
 
 
 @dataclass(frozen=True)
-class RetrievalSetting:
-    """How many records to bring into the prompt from one namespace, and how relevant."""
-
-    top_k: int
-    relevance_score: float
-
-
-@dataclass(frozen=True)
 class AgentConfig:
     model_id: str
     max_output_tokens: int
     event_expiry_days: int
-    # Namespace template -> setting; empty means nothing is retrieved into the prompt.
-    retrieval: dict[str, RetrievalSetting] = field(default_factory=dict)
     # Whether the agent exports spans (stack.py turns this into the Runtime's environment).
     tracing: bool = False
-
-
-def _retrieval(blocks: dict) -> dict[str, RetrievalSetting]:
-    """[memory.retrieval.<strategy name>] blocks, keyed by that strategy's namespace."""
-    found = {}
-    for name, block in blocks.items():
-        key = f"memory.retrieval.{name}"
-        if name in NOT_RETRIEVED:
-            raise ValueError(f"{key}: summaries are not retrieved into the prompt")
-        if name not in NAMESPACES:
-            raise ValueError(f"{key}: no such strategy; use one of {', '.join(NAMESPACES)}")
-        unknown = sorted(f"{key}.{k}" for k in set(block) - _RETRIEVAL)
-        if unknown:
-            raise ValueError(f"unknown key(s): {', '.join(unknown)}")
-        top_k = block.get("top_k")
-        if type(top_k) is not int or not 1 <= top_k <= TOP_K_MAX:
-            raise ValueError(f"{key}.top_k must be an integer from 1 to {TOP_K_MAX}")
-        score = block.get("relevance_score")
-        if type(score) not in (int, float) or not 0.0 <= score <= 1.0:
-            raise ValueError(f"{key}.relevance_score must be a number from 0.0 to 1.0")
-        found[NAMESPACES[name]] = RetrievalSetting(top_k, float(score))
-    return found
+    # How many of the user's newest preference records go into the system prompt; 0: none.
+    max_preferences: int = 0
+    # The most facts one search_memory call returns.
+    facts_top_k: int = TOP_K_DEFAULT
+    # The most summaries one recall_conversations call returns.
+    summaries_top_k: int = TOP_K_DEFAULT
 
 
 def load_config(path: Path = DEFAULT_PATH) -> AgentConfig:
@@ -116,9 +94,17 @@ def load_config(path: Path = DEFAULT_PATH) -> AgentConfig:
     if type(expiry) is not int or not EXPIRY_DAYS_MIN <= expiry <= EXPIRY_DAYS_MAX:
         limits = f"{EXPIRY_DAYS_MIN} to {EXPIRY_DAYS_MAX}"
         raise ValueError(f"memory.event_expiry_days must be an integer from {limits}")
-    retrieval = _retrieval(memory.get("retrieval", {}))
     # No [tracing] section means off; a section must say which.
     tracing = data["tracing"].get("enabled") if "tracing" in data else False
     if type(tracing) is not bool:
         raise ValueError("tracing.enabled must be true or false")
-    return AgentConfig(model_id, max_output_tokens, expiry, retrieval, tracing)
+    # No max_preferences means none.
+    preferences = memory.get("max_preferences", 0)
+    if type(preferences) is not int or not 0 <= preferences <= MAX_PREFERENCES:
+        raise ValueError(f"memory.max_preferences must be an integer from 0 to {MAX_PREFERENCES}")
+    top_k = {}
+    for key in ("facts_top_k", "summaries_top_k"):
+        top_k[key] = memory.get(key, TOP_K_DEFAULT)
+        if type(top_k[key]) is not int or not 1 <= top_k[key] <= TOP_K_LIMIT:
+            raise ValueError(f"memory.{key} must be an integer from 1 to {TOP_K_LIMIT}")
+    return AgentConfig(model_id, max_output_tokens, expiry, tracing, preferences, **top_k)

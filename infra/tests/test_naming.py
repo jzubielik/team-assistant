@@ -29,6 +29,7 @@ LIMITS = {
     "exchange_secret": (r"[A-Za-z0-9/_+=.@-]+", 512),
     "gateway": (r"([0-9a-zA-Z][-]?){1,48}", 48),
     "web_bucket": (r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", 63),
+    "guardrail": (r"[0-9a-zA-Z_-]+", 50),
     "audience": (r"[\x21\x23-\x5B\x5D-\x7E]+", 256),
 }
 
@@ -38,7 +39,7 @@ def test_longest_env_has_15_characters():
     assert validate_env(LONGEST_ENV) == LONGEST_ENV
 
 
-@pytest.mark.parametrize("env", ["dev", "a-b", "p1", "custom-test", LONGEST_ENV])
+@pytest.mark.parametrize("env", ["dev", "a-b", "p1", "custom-test", "gateway2", LONGEST_ENV])
 def test_valid_env(env):
     assert validate_env(env) == env
 
@@ -55,6 +56,9 @@ def test_valid_env(env):
         "a_b",
         "a b",
         LONGEST_ENV + "x",
+        # Its gateway would match the permissions of environment "dev" (…-dev-gateway-*).
+        "dev-gateway-x",
+        "gateway",
     ],
 )
 def test_invalid_env(env):

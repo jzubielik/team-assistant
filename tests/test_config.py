@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from team_assistant.config import NAMESPACES, AgentConfig, RetrievalSetting, load_config
+from team_assistant.config import NAMESPACES, AgentConfig, load_config
 
 VALID = 'model_id = "m"\nmax_output_tokens = 100\n[memory]\nevent_expiry_days = 30\n'
-RETRIEVAL = "[memory.retrieval.preferences]\ntop_k = 5\nrelevance_score = 0.2\n"
 
 
 def write(tmp_path, text):
@@ -22,46 +21,40 @@ def test_repository_config_loads():
         model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0",
         max_output_tokens=4000,
         event_expiry_days=30,
-        retrieval={
-            "/preferences/{actorId}/": RetrievalSetting(top_k=5, relevance_score=0.2),
-            "/facts/{actorId}/": RetrievalSetting(top_k=5, relevance_score=0.4),
-        },
+        max_preferences=20,
+        facts_top_k=20,
+        summaries_top_k=5,
     )
 
 
+def test_max_preferences_is_read_and_absent_means_none(tmp_path):
+    assert load_config(write(tmp_path, VALID)).max_preferences == 0
+    assert load_config(write(tmp_path, VALID + "max_preferences = 100\n")).max_preferences == 100
+
+
+@pytest.mark.parametrize("value", ["-1", "101", "5.0", '"5"', "true"])
+def test_wrong_max_preferences_is_refused(tmp_path, value):
+    with pytest.raises(ValueError, match="memory.max_preferences"):
+        load_config(write(tmp_path, VALID + f"max_preferences = {value}\n"))
+
+
+@pytest.mark.parametrize("key", ["facts_top_k", "summaries_top_k"])
+def test_a_top_k_is_read_and_absent_means_five(tmp_path, key):
+    assert getattr(load_config(write(tmp_path, VALID)), key) == 5
+    assert getattr(load_config(write(tmp_path, VALID + f"{key} = 100\n")), key) == 100
+
+
+@pytest.mark.parametrize("key", ["facts_top_k", "summaries_top_k"])
+@pytest.mark.parametrize("value", ["0", "101", "5.0", '"5"', "true"])
+def test_a_wrong_top_k_is_refused(tmp_path, key, value):
+    with pytest.raises(ValueError, match=f"memory.{key} must be an integer from 1 to 100"):
+        load_config(write(tmp_path, VALID + f"{key} = {value}\n"))
+
+
 def test_namespaces_start_and_end_with_a_slash():
-    # Retrieval matches a prefix: without the trailing slash, /preferences/abc would also
+    # A search matches a prefix: without the trailing slash, /preferences/abc would also
     # match /preferences/abcd... (AgentCore devguide, "Memory organization").
     assert all(t.startswith("/") and t.endswith("/") for t in NAMESPACES.values())
-
-
-def test_retrieval_is_keyed_by_the_strategys_namespace(tmp_path):
-    config = load_config(write(tmp_path, VALID + RETRIEVAL))
-    assert config.retrieval == {"/preferences/{actorId}/": RetrievalSetting(5, 0.2)}
-
-
-def test_no_retrieval_block_means_no_retrieval(tmp_path):
-    assert load_config(write(tmp_path, VALID)).retrieval == {}
-
-
-@pytest.mark.parametrize(
-    ("text", "message"),
-    [
-        (RETRIEVAL.replace(".preferences", ".prefs"), "memory.retrieval.prefs"),
-        (RETRIEVAL.replace(".preferences", ".summaries"), "summaries are not retrieved"),
-        (RETRIEVAL.replace("= 5", "= 0"), "top_k"),
-        (RETRIEVAL.replace("= 5", "= 1001"), "top_k"),
-        (RETRIEVAL.replace("= 5", "= 5.0"), "top_k"),
-        (RETRIEVAL.replace("= 0.2", "= 1.5"), "relevance_score"),
-        (RETRIEVAL.replace("= 0.2", "= -0.1"), "relevance_score"),
-        (RETRIEVAL.replace("= 0.2", '= "0.2"'), "relevance_score"),
-        (RETRIEVAL.replace("top_k = 5\n", ""), "top_k"),
-        (RETRIEVAL + "topk = 3\n", "memory.retrieval.preferences.topk"),
-    ],
-)
-def test_wrong_retrieval_settings_are_refused(tmp_path, text, message):
-    with pytest.raises(ValueError, match=message):
-        load_config(write(tmp_path, VALID + text))
 
 
 def test_values_are_read(tmp_path):

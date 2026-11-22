@@ -1,7 +1,8 @@
 // The agent's answers are Markdown. Model text is never trusted as HTML:
-// markdown-it escapes raw HTML (html: false), links must be http or https, and images are off,
-// so an answer cannot run script or make the browser load anything. The page inserts the
-// result as HTML only because of these settings; tests pin each of them.
+// markdown-it escapes raw HTML (html: false), links must be https to a host in LINK_HOSTS, and
+// images are off, so an answer cannot run script, make the browser load anything, or link to
+// an address made up by text the agent read. The page inserts the result as HTML only because
+// of these settings; tests pin each of them.
 //
 // Issue lists: the agent writes "- **[#<number>](<url>)** <title> `label`"
 // (the number a link to the issue; a plain "**#<number>**" works too); such a list item gets
@@ -11,7 +12,18 @@ import MarkdownIt from "markdown-it";
 
 const md = new MarkdownIt({ html: false, linkify: true, typographer: false });
 md.disable("image");
-md.validateLink = (url: string) => /^https?:\/\//i.test(url.trim());
+
+// Hosts the agent's links may point to. Any other address stays plain text.
+const LINK_HOSTS = new Set(["github.com"]);
+
+md.validateLink = (url: string) => {
+  try {
+    const parsed = new URL(url.trim());
+    return parsed.protocol === "https:" && LINK_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
 
 const defaultLinkOpen =
   md.renderer.rules.link_open ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));

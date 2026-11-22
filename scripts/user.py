@@ -3,9 +3,10 @@
     python scripts/user.py --profile <profile> --region <region> --user-pool-id <id> <username>
 
 The password is read twice from a hidden prompt. It is never a command-line argument or an
-environment variable, so it does not appear in the process list or in shell history. No
-message is sent to the user (the pool has no e-mail or SMS configuration): the operator tells
-the user the password.
+environment variable, so it does not appear in the process list or in shell history. An
+empty answer makes a random password, printed once (for test users). No message is sent to
+the user (the pool has no e-mail or SMS configuration): the operator tells the user the
+password.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from __future__ import annotations
 import argparse
 import getpass
 import re
+import secrets
+import string
 import sys
 
 USERNAME = re.compile(r"[a-z][a-z0-9._-]{0,31}")
@@ -33,10 +36,21 @@ def set_user(client, user_pool_id: str, username: str, password: str) -> str:
     return done
 
 
-def read_password(prompt=getpass.getpass) -> str:
-    first = prompt("Password: ")
+def random_password() -> str:
+    """24 characters with a lower-case and an upper-case letter, a digit and a symbol, which
+    the pool's default password policy asks for."""
+    groups = (string.ascii_lowercase, string.ascii_uppercase, string.digits, "-_.+=")
+    while True:
+        password = "".join(secrets.choice("".join(groups)) for _ in range(24))
+        if all(set(password) & set(group) for group in groups):
+            return password
+
+
+def read_password(prompt=getpass.getpass) -> str | None:
+    """The typed password; None when nothing is typed."""
+    first = prompt("Password (empty: a random one): ")
     if not first:
-        raise ValueError("empty password")
+        return None
     if prompt("Password again: ") != first:
         raise ValueError("the two passwords differ")
     return first
@@ -57,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     try:
-        password = read_password()
+        typed = read_password()
     except ValueError as error:
         print(f"error: {error}; nothing done", file=sys.stderr)
         return 1
@@ -65,12 +79,16 @@ def main(argv: list[str] | None = None) -> int:
 
     client = boto3.Session(profile_name=args.profile, region_name=args.region).client("cognito-idp")
     try:
+        password = typed or random_password()
         done = set_user(client, args.user_pool_id, args.username, password)
     except client.exceptions.InvalidPasswordException as error:
         # The service's message states the password policy; it does not contain the password.
         print(f"error: {error.response['Error']['Message']}", file=sys.stderr)
         return 1
     print(f"user: {args.username} {done}")
+    if not typed:
+        # After the service took it: a password that was not set is never shown.
+        print(f"password: {password}")
     return 0
 
 

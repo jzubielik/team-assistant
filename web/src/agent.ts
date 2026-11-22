@@ -29,7 +29,7 @@ function request(token: string, sessionId: string, body: object): RequestInit {
   };
 }
 
-// A new conversation: "session-" and a UUID, 44 characters (the Runtime takes 33 to 100).
+// A new conversation: "session-" and a UUID, 44 characters (the Runtime takes 33 or more, Memory 100 at most).
 export function newSessionId(): string {
   return `session-${crypto.randomUUID()}`;
 }

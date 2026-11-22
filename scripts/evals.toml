@@ -1,0 +1,206 @@
+# Cases for make eval (scripts/evals.py), asked to a user whose memory make seed has filled
+# from scripts/seed.toml. The expected words follow from that file.
+#
+# all_of:  every entry must stand in the answer as a whole word (a plural s is allowed).
+# none_of: no entry may stand in the answer. Only names that are no ordinary English words:
+#          "suggest" or "email" would also be met in a remark.
+# tool:    a tool the model must call.
+# expected: the reference answer for the judge, a model that compares the answer with it. A
+#          case without one is not judged.
+# An entry "a|b" is met by either word; "=Go" is matched with its case.
+
+# One fact.
+
+[[case]]
+id = "one-language"
+question = "Which language is the ledger service written in?"
+expected = "The ledger service is written in Go."
+all_of = ["=Go"]
+tool = "search_memory"
+
+[[case]]
+id = "one-day"
+question = "When is the sms service deployed?"
+expected = "The sms service is deployed every Monday."
+all_of = ["Monday"]
+tool = "search_memory"
+
+[[case]]
+id = "one-folder"
+question = "Where does the discovery team keep its runbooks?"
+expected = "The discovery team keeps its runbooks in the docs/runbooks folder."
+all_of = ["docs/runbooks"]
+tool = "search_memory"
+
+[[case]]
+id = "one-standup"
+question = "At what time does the payments team have its stand-up?"
+expected = "The payments team has its stand-up at 9:30 every weekday."
+all_of = ["9:30|09:30"]
+tool = "search_memory"
+
+[[case]]
+id = "one-retention"
+question = "For how long are logs kept in staging?"
+expected = "Logs are kept for 7 days in staging."
+all_of = ["7|seven|7-day"]
+tool = "search_memory"
+
+# Two facts in one question.
+
+[[case]]
+id = "two-language-day"
+question = "Which language is the sessions service written in, and when is it deployed?"
+expected = "The sessions service is written in Go and deployed every Wednesday."
+all_of = ["=Go", "Wednesday"]
+tool = "search_memory"
+
+[[case]]
+id = "two-days"
+question = "On which days are the search-api and suggest services deployed?"
+expected = """\
+The search-api service is deployed every Thursday and the suggest service every Friday."""
+all_of = ["Thursday", "Friday"]
+tool = "search_memory"
+
+# Lists. Some of the services that do not belong are in none_of.
+
+[[case]]
+id = "list-go"
+question = "Which services are written in Go?"
+expected = """\
+Exactly these eleven services are written in Go: ledger, payouts, pricing, catalog, indexer, \
+auth, config, scheduler, metrics, sessions, webhooks."""
+all_of = [
+    "ledger", "payouts", "pricing", "catalog", "indexer", "auth", "config", "scheduler",
+    "metrics", "sessions", "webhooks",
+]
+none_of = ["invoicing", "fraud-check", "gateway-api", "rate-limiter", "search-api", "sms"]
+tool = "search_memory"
+
+[[case]]
+id = "list-payments"
+question = "Which services does the payments team own?"
+expected = """\
+The payments team owns exactly these seven services: ledger, invoicing, payouts, refunds, \
+fraud-check, pricing, tax."""
+all_of = ["ledger", "invoicing", "payouts", "refunds", "fraud-check", "pricing", "tax"]
+none_of = ["indexer", "gateway-api", "scheduler", "rate-limiter", "search-api", "sms", "webhooks"]
+tool = "search_memory"
+
+[[case]]
+id = "list-monday"
+question = "Which services are deployed on Monday?"
+expected = """\
+Exactly these six services are deployed on Monday: invoicing, pricing, catalog, scheduler, \
+email, sms."""
+all_of = ["invoicing", "pricing", "catalog", "scheduler", "email", "sms"]
+none_of = [
+    "ledger", "payouts", "fraud-check", "indexer", "gateway-api", "rate-limiter", "search-api",
+    "webhooks",
+]
+tool = "search_memory"
+
+[[case]]
+id = "list-all"
+question = "List every service and the team that owns it."
+expected = """\
+payments: ledger, invoicing, payouts, refunds, fraud-check, pricing, tax. discovery: \
+catalog, recommendations, ranking, indexer, search-api, suggest. platform: auth, \
+gateway-api, config, scheduler, sessions, rate-limiter. engagement: notifications, email, \
+push, sms, webhooks. analytics: reporting, metrics, exports, dashboards. All 28 services, \
+each with this team."""
+all_of = [
+    "ledger", "invoicing", "payouts", "refunds", "fraud-check", "pricing", "tax", "catalog",
+    "recommendations", "ranking", "indexer", "auth", "gateway-api", "config", "scheduler",
+    "notifications", "email", "push", "reporting", "metrics", "sessions", "rate-limiter",
+    "search-api", "suggest", "sms", "webhooks", "exports", "dashboards",
+]
+tool = "search_memory"
+
+# The answer needs a fact that the first one leads to.
+
+[[case]]
+id = "chain-channel"
+question = "In which channel are incidents tracked for the team that owns the ledger service?"
+expected = """\
+The payments team owns the ledger service; its incidents are tracked in the #pay-incidents \
+channel."""
+all_of = ["pay-incidents"]
+tool = "search_memory"
+
+[[case]]
+id = "chain-day"
+question = "On which day is the engagement team's Go service deployed?"
+expected = "The engagement team's Go service is webhooks; it is deployed every Thursday."
+all_of = ["Thursday"]
+tool = "search_memory"
+
+# Needs today's date. "Yes" is right only in the week the user's memory was filled.
+
+[[case]]
+id = "date-on-call"
+question = "Am I on call this week? Start the answer with yes or no."
+expected = "Yes: the user is on call for the payments team this week."
+all_of = ["yes"]
+tool = "search_memory"
+
+# Nothing is stored about these.
+
+[[case]]
+id = "none-language"
+question = "Which language is the checkout service written in?"
+expected = """\
+Nothing is stored about a checkout service: the answer says so and names no language for it."""
+none_of = ["=Go", "Java", "Kotlin", "Python", "Rust", "Scala", "TypeScript"]
+tool = "search_memory"
+
+[[case]]
+id = "none-database"
+question = "Which database does the billing service use?"
+expected = """\
+Nothing is stored about the billing service's database: the answer says so and names no \
+database."""
+none_of = ["PostgreSQL", "Postgres", "MySQL", "MariaDB", "DynamoDB", "MongoDB", "Aurora", "Redis"]
+tool = "search_memory"
+
+# No word can tell an invented name from an honest "not stored": read the answer.
+[[case]]
+id = "none-lead"
+question = "Who leads the payments team?"
+expected = """\
+Nothing is stored about who leads the payments team: the answer says so and names nobody."""
+tool = "search_memory"
+
+# The preference stated last (TypeScript) replaces the first (Python).
+
+[[case]]
+id = "preference-language"
+question = "Show me how to read a file line by line."
+expected = "A code example in TypeScript, not in Python."
+all_of = ["TypeScript|ts"]
+
+# Earlier conversations. For the three questions about a day only the tool is checked: the
+# right answer depends on the day the user's memory was filled. Read the answers.
+
+[[case]]
+id = "recall-today"
+question = "What did we talk about today?"
+tool = "recall_conversations"
+
+[[case]]
+id = "recall-yesterday"
+question = "What did we talk about yesterday?"
+tool = "recall_conversations"
+
+[[case]]
+id = "recall-topic"
+question = "What did we discuss earlier about database backups?"
+expected = "Database backups are taken every night at 02:00 UTC."
+all_of = ["02:00|2:00"]
+tool = "recall_conversations"
+
+[[case]]
+id = "recall-when"
+question = "On which date did we talk about the on-call shift?"
+tool = "recall_conversations"

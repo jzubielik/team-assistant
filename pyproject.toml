@@ -19,6 +19,7 @@ dev = [
     "pytest",
     "pyyaml", # also used by make bootstrap (scripts/bootstrap_template.py)
     "ruff",
+    "strands-agents-evals",
 ]
 
 [build-system]

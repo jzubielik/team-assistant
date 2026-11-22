@@ -6,13 +6,16 @@ A request is one user message, ``{"prompt": ...}``, or the forwarding of a GitHu
 1. check the message (a non-empty ``prompt``);
 2. find out who is asking (identity.py: the ``sub`` claim of the verified token);
 3. open that user's conversation history for this session (memory.py);
-4. run the model with the history and the GitHub tools list_issues and get_issue
-   (github.py), streaming the answer.
+4. list the user's stored preferences for the system prompt (recall.py, prompts.py);
+5. run the model with the history, the GitHub tools list_issues and get_issue (github.py) and
+   the memory tools search_memory and recall_conversations (recall.py), streaming the answer.
 
-Steps 1 and 2 fail before anything is read from memory or sent to the model. The answer is a
+Steps 1 and 2 fail before anything is read from memory or sent to the model. So does a session
+id that another user used first in this process (``_other_users_session``). The answer is a
 stream of events (built in events.py), each a JSON object: ``{"type": "text", "data": ...}``
-for a piece of the answer, ``{"type": "auth_url", "url": ..., "state": ...}`` when the user
-must consent in GitHub first, then ``{"type": "done", "usage": {...}}``, or
+for a piece of the answer, ``{"type": "tool", "name": ...}`` when the model calls a tool,
+``{"type": "auth_url", "url": ..., "state": ...}`` when the user must consent in GitHub first,
+then ``{"type": "done", "usage": {...}}``, or
 ``{"type": "error", ...}``.
 A consent request makes no model call (consent.py) and answers ``{"type": "consent_done"}``.
 The web page also asks ``{"conversations": {}}`` and ``{"history": {}}`` (conversations.py): no
@@ -35,32 +38,43 @@ from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent
+from strands.agent.conversation_manager import SummarizingConversationManager
+from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.models import BedrockModel, Model
 from strands.types.exceptions import ContextWindowOverflowException, ModelThrottledException
 
 from team_assistant import events
-from team_assistant.config import AgentConfig, load_config, return_url
+from team_assistant.config import MAX_TURNS, AgentConfig, load_config, return_url
 from team_assistant.consent import ConsentError, complete_consent
 from team_assistant.conversations import history, list_conversations
 from team_assistant.github import github_tools
+from team_assistant.guard import guard_hook
 from team_assistant.identity import IdentityError, actor_from_headers, bearer_from_headers
 from team_assistant.logs import configure_stdout
 from team_assistant.memory import session_manager
-from team_assistant.titles import title_once
-
-SYSTEM_PROMPT = (
-    "You are the assistant of a software team. Answer briefly and precisely. "
-    "Use what the user told you earlier in this conversation. "
-    "If you do not know something, say so. "
-    "For issues of a public GitHub repository, use the list_issues tool; to read or summarise "
-    "one issue, use get_issue. "
-    # The web page renders Markdown and draws issue lines as rows.
-    "Format answers in Markdown. List each issue on its own line as "
-    "`- **[#<number>](<its address>)** <title>` followed by each of its labels in backticks."
-)
+from team_assistant.prompts import system_prompt
+from team_assistant.recall import list_preferences, memory_tools
+from team_assistant.titles import make_title, store_title
 
 app = BedrockAgentCoreApp()
 log = logging.getLogger("team_assistant")
+
+# Session id -> the user who used it first, for the life of this process.
+_SESSION_USERS: dict[str, str] = {}
+OTHER_USERS_SESSION = "this session id is in use by another user; start a new conversation"
+
+
+def _other_users_session(session_id: str | None, actor: str) -> bool:
+    """True when another user used this session id first in this process.
+
+    AgentCore Runtime sends every request with one session id to the same microVM, whoever
+    the user is, and leaves the mapping of sessions to users to the agent (developer guide,
+    runtime-sessions). Without this check two users who send the same session id would share
+    one microVM: the same process and the same role credentials. Memory would still be
+    separate, because it is keyed by user. The Runtime runs one session per microVM, so in a
+    deployment the dictionary has one entry.
+    """
+    return bool(session_id) and _SESSION_USERS.setdefault(session_id, actor) != actor
 
 
 class ModelCallError(Exception):
@@ -97,6 +111,21 @@ class QuietBedrockModel(QuietErrors, BedrockModel):
     """The Bedrock model the agent uses."""
 
 
+def _refuse_wrong_arguments(event: BeforeToolCallEvent) -> None:
+    """Cancel a tool call whose arguments do not fit the tool's parameters.
+
+    Strands would otherwise copy its validation error, which quotes the arguments, into the
+    status of the tool's span; a cancelled call has no span.
+    """
+    metadata = getattr(event.selected_tool, "_metadata", None)  # strands-agents 1.64.0
+    if metadata is None:
+        return
+    try:
+        metadata.validate_input(event.tool_use["input"])
+    except ValueError:
+        event.cancel_tool = "Refused: the arguments do not fit the tool's parameters."
+
+
 def build_agent(
     config: AgentConfig,
     session_mgr: Any,
@@ -104,20 +133,32 @@ def build_agent(
     session_id: str,
     model: Model | None = None,
     tools: list | None = None,
+    preferences: list[str] | None = None,
+    guard: Callable | None = None,
 ) -> Agent:
-    """The Strands agent for one request. Tests pass their own ``model``."""
-    return Agent(
+    """The Strands agent for one request. Tests pass their own ``model``. ``guard`` checks
+    tool results before the model reads them (guard.py)."""
+    agent = Agent(
         model=model
         or QuietBedrockModel(model_id=config.model_id, max_tokens=config.max_output_tokens),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt(preferences or []),
         session_manager=session_mgr,
         tools=list(tools or []),
+        # A long conversation keeps its beginning as a summary: before a model call that would
+        # fill 70 % of the model's context window, the oldest messages are replaced by a
+        # summary the same model writes. The summary is stored with the agent's state and
+        # restored with the session. (The default manager drops messages beyond the last 40.)
+        conversation_manager=SummarizingConversationManager(proactive_compression=True),
         # The default handler prints the answer to stdout, which is the Runtime's log.
         callback_handler=None,
         # Strands puts these on every span it creates (agent, cycle, model call, tool call), so
         # a trace can be found by user or by session. Ids only: no content goes into spans.
         trace_attributes={"actor.id": actor, "session.id": session_id},
     )
+    agent.hooks.add_callback(BeforeToolCallEvent, _refuse_wrong_arguments)
+    if guard is not None:
+        agent.hooks.add_callback(AfterToolCallEvent, guard)
+    return agent
 
 
 def _log(outcome: str, actor: str | None, session: str | None, usage: dict, **extra: str) -> None:
@@ -125,19 +166,41 @@ def _log(outcome: str, actor: str | None, session: str | None, usage: dict, **ex
     log.info(json.dumps({**line, **usage, **extra}))
 
 
-def _default_tools(on_auth_url: Callable[[str], None], state: str, return_to: str) -> list:
-    return github_tools(on_auth_url, state, return_to)
+def _default_recall(
+    client: Any, memory_id: str, actor: str, session_id: str, config: AgentConfig
+) -> tuple[list[str], list]:
+    """The user's preferences for the system prompt and the memory tools of this request.
+
+    If the listing fails, the request is answered without preferences; the log names the
+    error's type only (its message can quote a record).
+    """
+    try:
+        preferences = list_preferences(client, memory_id, actor, config.max_preferences)
+    except Exception as error:  # noqa: BLE001
+        line = {"event": "preferences_failed", "actor": actor, "session": session_id}
+        log.warning(json.dumps({**line, "error_type": type(error).__name__}))
+        preferences = []
+    tools = memory_tools(client, memory_id, actor, config.facts_top_k, config.summaries_top_k)
+    return preferences, tools
 
 
 def _store_title(
-    region: str, model_id: str, memory_id: str, actor: str, session: str, prompt: str, answer: str
+    client: Any,
+    region: str,
+    model_id: str,
+    memory_id: str,
+    actor: str,
+    session: str,
+    prompt: str,
+    answer: str,
 ) -> None:
-    """Title the session after its first answer (titles.py), with the agent's own clients."""
+    """Title the session after its first answer (titles.py)."""
     import boto3
 
     converse = boto3.client("bedrock-runtime", region_name=region).converse
-    memory_client = boto3.client("bedrock-agentcore", region_name=region)
-    title_once(memory_client, converse, model_id, memory_id, actor, session, prompt, answer)
+    title = make_title(converse, model_id, prompt, answer)
+    if title:
+        store_title(client, memory_id, actor, session, title)
 
 
 async def _consent(
@@ -151,6 +214,10 @@ async def _consent(
     except IdentityError as error:
         _log("rejected", None, None, usage, reason="identity")
         yield events.error(f"cannot tell who is asking: {error}")
+        return
+    if _other_users_session(context.session_id, actor):
+        _log("rejected", actor, context.session_id, usage, reason="session of another user")
+        yield events.error(OTHER_USERS_SESSION)
         return
     body = payload.get("consent")
     session_uri = body.get("session_uri") if isinstance(body, dict) else None
@@ -170,9 +237,15 @@ async def _consent(
 
 
 def _memory_client(region: str) -> Any:
-    import boto3  # the agent's own role reads Memory (ListSessions, ListEvents)
+    import boto3  # the agent's own role calls Memory
 
     return boto3.client("bedrock-agentcore", region_name=region)
+
+
+def _guard_client(region: str) -> Any:
+    import boto3  # the agent's own role calls ApplyGuardrail
+
+    return boto3.client("bedrock-runtime", region_name=region)
 
 
 async def _read_memory(
@@ -193,6 +266,10 @@ async def _read_memory(
     if not memory_id or not region or (kind == "history" and not session_id):
         _log("rejected", actor, session_id, usage, reason="session id or agent settings")
         yield events.error("the request has no session id, or the agent is not configured")
+        return
+    if _other_users_session(session_id, actor):
+        _log("rejected", actor, session_id, usage, reason="session of another user")
+        yield events.error(OTHER_USERS_SESSION)
         return
     client = make_client(region)
     try:
@@ -220,8 +297,10 @@ async def respond(
     make_session_manager: Callable[..., Any] | None = None,
     make_tools: Callable[[Callable[[str], None], str], list] | None = None,
     complete: Callable[..., None] = complete_consent,
-    make_memory_client: Callable[[str], Any] = _memory_client,
+    make_memory_client: Callable[[str], Any] | None = None,
     store_title: Callable[..., None] | None = None,
+    recall: Callable[..., tuple[list[str], list]] | None = None,
+    make_guard_client: Callable[[str], Any] | None = None,
 ) -> AsyncIterator[dict]:
     """Handle one request (see the module docstring). The keyword arguments are for tests."""
     if isinstance(payload, dict) and "consent" in payload:
@@ -229,7 +308,7 @@ async def respond(
             yield event
         return
     if isinstance(payload, dict) and ("conversations" in payload or "history" in payload):
-        async for event in _read_memory(payload, context, make_memory_client):
+        async for event in _read_memory(payload, context, make_memory_client or _memory_client):
             yield event
         return
     usage = {"input_tokens": 0, "output_tokens": 0}
@@ -249,6 +328,10 @@ async def respond(
     if not session_id or not memory_id or not region:
         _log("rejected", actor, session_id, usage, reason="session id or agent settings")
         yield events.error("the request has no session id, or the agent is not configured")
+        return
+    if _other_users_session(session_id, actor):
+        _log("rejected", actor, session_id, usage, reason="session of another user")
+        yield events.error(OTHER_USERS_SESSION)
         return
     try:
         # Where the browser returns after a GitHub consent: chosen by the client's name from a
@@ -273,9 +356,22 @@ async def respond(
         def on_auth_url(url: str) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, ("auth_url", url))
 
-        tools = (make_tools or partial(_default_tools, return_to=return_to))(on_auth_url, state)
-        with open_session(memory_id, actor, session_id, region, config.retrieval) as session_mgr:
-            agent = build_agent(config, session_mgr, actor, session_id, model, tools)
+        tools = (make_tools or partial(github_tools, return_url=return_to))(on_auth_url, state)
+        # One Memory client for the preferences, the memory tools and the title.
+        client = (make_memory_client or _memory_client)(region)
+        preferences, memory = await asyncio.to_thread(
+            recall or _default_recall, client, memory_id, actor, session_id, config
+        )
+        tools = [*tools, *memory]
+        guard = guard_hook(
+            lambda: (make_guard_client or _guard_client)(region), os.environ.get("GUARDRAIL_ID")
+        )
+        called: set[str] = set()
+        stopped = False
+        with open_session(memory_id, actor, session_id, region) as session_mgr:
+            agent = build_agent(
+                config, session_mgr, actor, session_id, model, tools, preferences, guard
+            )
             # The session manager has restored the conversation into the agent: no message
             # means this is the session's first answer, the only one that gets a title. (Asking
             # Memory for a title event instead finds it only after a delay, so each answer would
@@ -284,7 +380,7 @@ async def respond(
 
             async def run() -> None:
                 try:
-                    async for event in agent.stream_async(prompt):
+                    async for event in agent.stream_async(prompt, limits={"turns": MAX_TURNS}):
                         await queue.put(("agent", event))
                 finally:
                     await queue.put(("end", None))
@@ -299,7 +395,14 @@ async def respond(
                 elif isinstance(event.get("data"), str):
                     answer.append(event["data"])
                     yield events.text(event["data"])
+                elif "current_tool_use" in event:
+                    # One event per tool call: Strands repeats this for every piece of input.
+                    use = event["current_tool_use"]
+                    if use.get("toolUseId") and use["toolUseId"] not in called:
+                        called.add(use["toolUseId"])
+                        yield events.tool(str(use.get("name", "")))
                 elif "result" in event:
+                    stopped = event["result"].stop_reason == "limit_turns"
                     total = event["result"].metrics.accumulated_usage
                     usage = {
                         "input_tokens": total.get("inputTokens", 0),
@@ -312,12 +415,17 @@ async def respond(
         _log("failed", actor, session_id, usage, error_type=error_type)
         yield events.error("the agent could not answer; the operator can find the cause in the log")
         return
+    if stopped:
+        _log("failed", actor, session_id, usage, error_type="limit_turns")
+        yield events.error("the answer took too many steps; ask for less in one message")
+        return
     # The title before done, so the page's list, refreshed on done, shows it. A failure costs
     # the title only, never the answer; the log names the error type.
     try:
         if first_answer:
             await asyncio.to_thread(
                 store_title or _store_title,
+                client,
                 region,
                 config.model_id,
                 memory_id,

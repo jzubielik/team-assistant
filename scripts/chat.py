@@ -12,7 +12,8 @@ Requests go to the environment's AgentCore Gateway (stack output GatewayUrl), wh
 token and relays the request to the Runtime: <gateway>/<target>/invocations (docs/adr/0004).
 Headers and the session id limit: AgentCore developer guide,
 "Authenticate and authorize with Inbound Auth and Outbound Auth" (invoke with a bearer token),
-and the InvokeAgentRuntime shape in botocore 1.44.2 (runtimeSessionId: 33 to 256 characters).
+and botocore 1.44.2: InvokeAgentRuntime takes a runtimeSessionId of 33 to 256 characters, and
+Memory, where the agent uses the same id, a sessionId of at most 100.
 Standard library only.
 
 GitHub consent: when the agent streams an ``auth_url`` event, this client listens on
@@ -47,7 +48,7 @@ import auth  # noqa: E402
 CONSENT_TIMEOUT = 600
 DEFAULT_RETURN_URL = "http://localhost:8977/github/callback"
 MIN_SESSION_ID_LEN = 33
-MAX_SESSION_ID_LEN = 256
+MAX_SESSION_ID_LEN = 100
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
 
 
@@ -283,10 +284,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # Checked before any request: a wrong session id or a missing login costs nothing.
         session_id = check_session_id(args.session) if args.session else new_session_id()
-        auth.access_token(endpoints, args.env, args.user)
+        token = auth.access_token(endpoints, args.env, args.user)
         print(f"session: {session_id}")
         if args.prompt:
-            token = auth.access_token(endpoints, args.env, args.user)
             events = invoke(url, token, session_id, args.prompt)
             return 0 if print_answer(events, on_auth_url=on_auth_url) else 1
         print("Type a message and press Enter. Empty line or Ctrl-D ends the conversation.")

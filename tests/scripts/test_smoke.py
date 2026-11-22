@@ -111,6 +111,26 @@ def test_other_user_passes_for_separate_histories_and_fails_on_a_leak():
     assert not passed and "bob was told alice's word" in detail
 
 
+def refusing(message):
+    def ask(user, session, prompt):
+        raise smoke.chat.ChatError(message)
+
+    return ask
+
+
+def test_session_binding_passes_only_when_bob_is_refused_as_another_user():
+    refused = refusing("this session id is in use by another user; start a new conversation")
+    nothing = lambda user, session: []  # noqa: E731
+    assert smoke.check_session_binding(refused, nothing, "alice", "bob", "s")[0]
+    passed, detail = smoke.check_session_binding(Agent().ask, nothing, "alice", "bob", "s")
+    assert not passed and "was answered in alice's running session" in detail
+    passed, detail = smoke.check_session_binding(refusing("boom"), nothing, "alice", "bob", "s")
+    assert not passed and "another reason" in detail
+    stored = lambda user, session: ["Which word?"]  # noqa: E731
+    passed, detail = smoke.check_session_binding(refused, stored, "alice", "bob", "s")
+    assert not passed and "stored for bob" in detail
+
+
 def test_other_user_fails_when_the_stored_messages_cannot_be_compared():
     agent = Agent()
     assert not smoke.check_other_user(agent.ask, lambda user, s: [], "alice", "bob", "s", WORD)[0]
@@ -191,6 +211,40 @@ def test_new_session_fails_naming_the_namespace_when_no_record_appears():
     assert "no record" in detail and "preferences" in detail
 
 
+def fact_agent(calls_tool=True, knows=True):
+    """``ask`` stores a stated fact; ``ask_events`` answers the fact question in a new session."""
+    facts = []
+
+    def ask(user, session, prompt):
+        facts.append(prompt)
+        return "Noted."
+
+    def ask_events(user, session, prompt):
+        tool = [{"type": "tool", "name": "search_memory"}] if calls_tool else []
+        return [*tool, {"type": "text", "data": WORD if knows else "NONE"}, {"type": "done"}]
+
+    return ask, ask_events, lambda user, strategy: list(facts) if strategy == "facts" else []
+
+
+def test_memory_search_passes_when_a_new_session_finds_the_fact_with_the_tool():
+    ask, ask_events, records_of = fact_agent()
+    passed, detail = smoke.check_memory_search(ask, ask_events, records_of, no_wait, "alice", WORD)
+    assert passed, detail
+
+
+def test_memory_search_fails_without_a_record_without_the_tool_or_without_the_fact():
+    ask, ask_events, _ = fact_agent()
+    check = smoke.check_memory_search
+    passed, detail = check(ask, ask_events, lambda user, strategy: [], no_wait, "alice", WORD)
+    assert not passed and "no record" in detail and "facts" in detail
+    ask, ask_events, records_of = fact_agent(calls_tool=False)
+    passed, detail = check(ask, ask_events, records_of, no_wait, "alice", WORD)
+    assert not passed and "did not call search_memory (called: none)" in detail
+    ask, ask_events, records_of = fact_agent(knows=False)
+    passed, detail = check(ask, ask_events, records_of, no_wait, "alice", WORD)
+    assert not passed and "does not hold the fact" in detail
+
+
 def test_isolation_passes_for_separate_users_and_fails_on_a_leak():
     agent = LongTermAgent()
     smoke.check_new_session(agent.ask, agent.records_of, no_wait, "alice", WORD)
@@ -229,6 +283,18 @@ def test_run_prints_one_line_per_check_and_exits_1_on_any_failure():
         "FAIL  two: could not reach the agent",
     ]
     assert smoke.run([("one", lambda: (True, "fine"))], out=io.StringIO()) == 0
+
+
+def test_any_other_error_of_a_check_fails_it_and_the_next_check_still_runs():
+    def raising():
+        raise RuntimeError("AccessDenied")
+
+    out = io.StringIO()
+    assert smoke.run([("one", raising), ("two", lambda: (True, "fine"))], out=out) == 1
+    assert out.getvalue().splitlines() == [
+        "FAIL  one: RuntimeError: AccessDenied",
+        "PASS  two: fine",
+    ]
 
 
 def test_answer_text_joins_the_chunks_and_raises_on_an_error_event():
@@ -379,6 +445,15 @@ def github_agent(consented):
     return ask_events
 
 
+def test_guardrail_passes_only_when_it_stops_the_attack_and_lets_plain_text_through():
+    def guardrail(stops: set[str]):
+        return lambda text: "GUARDRAIL_INTERVENED" if text in stops else "NONE"
+
+    assert smoke.check_guardrail(guardrail({smoke.ATTACK}))[0]
+    assert not smoke.check_guardrail(guardrail(set()))[0]
+    assert not smoke.check_guardrail(guardrail({smoke.ATTACK, smoke.PLAIN}))[0]
+
+
 def test_github_tool_passes_when_alice_gets_issues_and_bob_is_asked_to_consent():
     passed, detail = smoke.check_github_tool(github_agent({"alice"}), "alice", "bob")
     assert passed, detail
@@ -437,6 +512,33 @@ def test_conversations_fail_without_the_session_or_its_title():
     read, _ = reader({("alice", "conversations"): {"type": "conversations", "items": []}})
     passed, detail = smoke.check_conversations(read, "alice", "s-1")
     assert not passed and "lacks" in detail
+
+
+def listed(*session_ids):
+    items = [{"session_id": s, "created_at": "", "title": "t"} for s in session_ids]
+    return {"type": "conversations", "items": items}
+
+
+def test_conversations_isolation_compares_the_sessions_only_alice_used_in_this_run():
+    only_alice = {"a-2", "a-3"}
+    # s-0 is an earlier run's smoke session: both users have it, and it is not compared.
+    answers = {("alice", "conversations"): listed("s-0", "s-1", "a-2", "a-3")}
+    read, calls = reader({**answers, ("bob", "conversations"): listed("s-0", "s-1", "b-2")})
+    passed, detail = smoke.check_conversations_isolation(read, "alice", "bob", "s-1", only_alice)
+    assert passed and "2 session(s)" in detail
+    assert [(user, session) for user, session, _ in calls] == [("bob", "s-1"), ("alice", "s-1")]
+    read, _ = reader({**answers, ("bob", "conversations"): listed("s-1", "a-3")})
+    passed, detail = smoke.check_conversations_isolation(read, "alice", "bob", "s-1", only_alice)
+    assert not passed and "holds 1 of alice's" in detail
+
+
+def test_conversations_isolation_fails_when_it_cannot_compare():
+    both = {("alice", "conversations"): listed("s-1"), ("bob", "conversations"): listed("s-1")}
+    read, _ = reader(both)
+    passed, detail = smoke.check_conversations_isolation(read, "alice", "bob", "s-1", {"a-2"})
+    assert not passed and "cannot compare" in detail
+    read, _ = reader({("alice", "conversations"): listed("s-1", "a-2")})
+    assert not smoke.check_conversations_isolation(read, "alice", "bob", "s-1", {"a-2"})[0]
 
 
 def history_of(*texts):

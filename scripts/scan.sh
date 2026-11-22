@@ -4,7 +4,7 @@
 #   scripts/scan.sh lint      actionlint, zizmor (offline), hadolint, shellcheck on every workflow, Dockerfile and shell script (make check)
 #   scripts/scan.sh staged    trufflehog on the staged files; the linters when workflows or Dockerfiles are staged (pre-commit)
 #   scripts/scan.sh history   trufflehog over every commit (make leaks)
-#   scripts/scan.sh audit     pip-audit on the locked dependencies of / and, once it exists, infra/ (make audit; network)
+#   scripts/scan.sh audit     pip-audit on uv.lock of / and infra/, npm audit on package-lock.json of infra/ and web/ (make audit; network)
 # trufflehog fails on verified and unknown results (unknown: verification could not finish,
 # e.g. offline). Secrets are never committed to fix a finding; see the gitleaks.sh hints.
 set -euo pipefail
@@ -71,6 +71,13 @@ audit() {
 		pip-audit --strict --disable-pip --require-hashes --progress-spinner off "${AUDIT_IGNORED[@]}" \
 			-r "$req" || status=1
 		rm -f "$req"
+	done
+	# The lock file alone: no node_modules needed, and development packages count too (they
+	# run in the build).
+	for dir in infra web; do
+		[[ -f "$dir/package-lock.json" ]] || continue
+		echo "+ npm audit ($dir/package-lock.json)" >&2
+		(cd "$dir" && npm audit --package-lock-only --no-fund) || status=1
 	done
 	return "$status"
 }

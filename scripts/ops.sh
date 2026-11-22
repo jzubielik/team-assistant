@@ -233,10 +233,6 @@ delete_secret() { # label, name
 		>/dev/null 2>&1 || echo "    (not found: nothing to delete)"
 }
 
-# The agent images live in the bootstrap's repository, which outlasts the environment. Every
-# deploy that changed the agent pushed one, and nothing else is stored there, so with no other
-# environment left the repository is emptied. By digest: an image may have several tags or
-# none. At most 100 ids per call (ECR API reference, BatchDeleteImage).
 # This project's CDK bootstrap in the account and region: TeamAssistantToolkit and
 # team-assistant-cdk-policies (docs/adr/0001). Shared by every environment, so it refuses while
 # one is deployed. The bootstrap template keeps its assets bucket (DeletionPolicy: Retain,
@@ -286,6 +282,10 @@ empty_web_bucket() {
 		echo "warning: could not empty s3://$bucket; the stack delete will fail on it"
 }
 
+# The agent images live in the bootstrap's repository, which outlasts the environment. Every
+# deploy that changed the agent pushed one, and nothing else is stored there, so with no other
+# environment left the repository is emptied. By digest: an image may have several tags or
+# none. At most 100 ids per call (ECR API reference, BatchDeleteImage).
 delete_agent_images() {
 	local others repository="cdk-$QUALIFIER-container-assets-$CALLER_ACCOUNT-$REGION"
 	others=$(aws_ cloudformation list-stacks \
@@ -447,12 +447,12 @@ cmd_ask() {
 
 # The user's id in the pool (the actor id in Memory), from the login saved by make login.
 user_sub() { # user
-	py - "$ENV" "$1" <<'PY' || die "'$1' is not logged in to env $ENV: run make login ENV=$ENV USER=$1"
-import base64, json, pathlib, sys
+	py - "$ENV" "$1" 2>/dev/null <<'PY' || die "'$1' is not logged in to env $ENV: run make login ENV=$ENV USER=$1"
+import json, sys
+sys.path.insert(0, "scripts")
+import auth
 env, user = sys.argv[1:]
-cache = json.loads((pathlib.Path.home() / ".config" / "team-assistant" / env / f"{user}.json").read_text())
-body = cache["access_token"].split(".")[1]
-print(json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))["sub"])
+print(auth._claims(json.loads(auth._cache_path(env, user).read_text())["access_token"])["sub"])
 PY
 }
 
@@ -473,7 +473,7 @@ cmd_smoke() {
 	need_aws
 	banner "smoke: end-to-end checks on $STACK as alice and bob (a few model calls; waits up to 5 min for long-term records; alice must have consented to GitHub)"
 	# Read before the call: a failed $(...) inside an argument list would not stop the script.
-	local gateway runtime memory domain client web_url web_bucket
+	local gateway runtime memory domain client web_url web_bucket guardrail
 	gateway=$(stack_output GatewayUrl)
 	web_url=$(stack_output WebUrl)
 	web_bucket=$(stack_output WebBucket)
@@ -481,27 +481,58 @@ cmd_smoke() {
 	memory=$(stack_output MemoryId)
 	domain=$(stack_output LoginDomain)
 	client=$(stack_output UserPoolClientId)
+	guardrail=$(stack_output GuardrailId)
 	py scripts/smoke.py --profile "$PROFILE" --region "$REGION" \
 		--gateway-url "$gateway" --gateway-target "$GATEWAY_TARGET" \
 		--runtime-arn "$runtime" --memory-id "$memory" \
 		--login-domain "$domain" --client-id "$client" --env "$ENV" \
-		--web-url "$web_url" --web-bucket "$web_bucket"
+		--web-url "$web_url" --web-bucket "$web_bucket" --guardrail-id "$guardrail"
 }
 
-# What each long-term strategy extracts and what reaches the next prompt, as a Markdown report.
-cmd_measure() {
+# Fills one user's long-term memory with scripted conversations and writes down the records
+# AgentCore Memory made of them.
+cmd_seed() {
 	need_aws
+	[[ -n "${TA_USER:-}" ]] || die "USER is required: make seed ENV=$ENV USER=<name>"
 	local out gateway memory domain client
-	out="measurements/$(date +%F)-$ENV.md"
-	banner "measure: scripted conversations as alice on $STACK (model calls; waits up to 5 min per namespace)"
+	out="measurements/$(date +%F)-$ENV-$TA_USER-seed.json"
+	banner "seed: the conversations of scripts/seed.toml as '$TA_USER' on $STACK (model calls; then waits up to 15 min for Memory)"
 	# Read before the call: a failed $(...) inside an argument list would not stop the script.
 	gateway=$(stack_output GatewayUrl)
 	memory=$(stack_output MemoryId)
 	domain=$(stack_output LoginDomain)
 	client=$(stack_output UserPoolClientId)
-	py scripts/measure.py --profile "$PROFILE" --region "$REGION" \
+	py scripts/seed.py --profile "$PROFILE" --region "$REGION" \
 		--gateway-url "$gateway" --gateway-target "$GATEWAY_TARGET" --memory-id "$memory" \
-		--login-domain "$domain" --client-id "$client" --env "$ENV" --out "$out"
+		--login-domain "$domain" --client-id "$client" --env "$ENV" --user "$TA_USER" \
+		--out "$out"
+}
+
+# Asks the cases of scripts/evals.toml to a user whose memory make seed has filled, and writes
+# down the answers, the tool calls and the checks.
+cmd_eval() {
+	need_aws
+	[[ -n "${TA_USER:-}" && -n "${TA_LABEL:-}" ]] ||
+		die "USER and LABEL are required: make eval ENV=$ENV USER=<name> LABEL=<name>"
+	local out gateway memory domain client
+	out="measurements/$(date +%F-%H%M)-$ENV-$TA_LABEL.json"
+	banner "eval: the cases of scripts/evals.toml as '$TA_USER' on $STACK (model calls)"
+	# Read before the call: a failed $(...) inside an argument list would not stop the script.
+	gateway=$(stack_output GatewayUrl)
+	memory=$(stack_output MemoryId)
+	domain=$(stack_output LoginDomain)
+	client=$(stack_output UserPoolClientId)
+	py scripts/evals.py --profile "$PROFILE" --region "$REGION" \
+		--gateway-url "$gateway" --gateway-target "$GATEWAY_TARGET" --memory-id "$memory" \
+		--login-domain "$domain" --client-id "$client" --env "$ENV" --user "$TA_USER" \
+		--label "$TA_LABEL" --runs "${TA_RUNS:-1}" --out "$out"
+}
+
+# Two results of make eval, case by case.
+cmd_compare() {
+	[[ -n "${TA_A:-}" && -n "${TA_B:-}" ]] ||
+		die "A and B are required: make compare A=<result> B=<result>"
+	py scripts/compare.py "$TA_A" "$TA_B"
 }
 
 # The page's development server. With MOCK=1 the mock agent of web/mock answers and
@@ -533,7 +564,7 @@ cmd_web() {
 main() {
 	local cmd=${1:-}
 	case "$cmd" in
-	setup | check | synth | bootstrap | diff | deploy | destroy | status | user | login | chat | ask | memory | smoke | measure | github | web)
+	setup | check | synth | bootstrap | diff | deploy | destroy | status | user | login | chat | ask | memory | smoke | seed | eval | compare | github | web)
 		"cmd_$cmd"
 		;;
 	web-sync) cmd_web_sync ;;

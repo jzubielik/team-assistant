@@ -58,8 +58,19 @@ def test_password_is_asked_twice_and_must_match():
     answers = iter(["one", "two"])
     with pytest.raises(ValueError, match="differ"):
         user.read_password(lambda _: next(answers))
-    with pytest.raises(ValueError, match="empty"):
-        user.read_password(lambda _: "")
+
+
+def test_an_empty_answer_is_no_password_and_a_random_one_has_every_group():
+    assert user.read_password(lambda _: "") is None
+    password = user.random_password()
+    assert len(password) == 24 and password != user.random_password()
+    for group in (
+        "abcdefghijklmnopqrstuvwxyz",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "0123456789",
+        "-_.+=",
+    ):
+        assert set(password) & set(group)
 
 
 @pytest.mark.parametrize("name", ["Alice", "", "1alice", "a b", "a'b", "x" * 33])

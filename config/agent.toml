@@ -16,16 +16,15 @@ enabled = false
 # Days after which a conversation event is deleted by AgentCore Memory (7 to 365).
 event_expiry_days = 30
 
-# Long-term records brought into the prompt, one block per strategy name from NAMESPACES in
-# src/team_assistant/config.py. top_k: at most this many records per question (1 to 1000);
-# relevance_score: records scoring below it are dropped (0.0 to 1.0). Summaries are stored but
-# not retrieved. Values from `make measure`:
-# preference records scored 0.32-0.38 whether relevant or not, so their threshold stays low and
-# top_k bounds them; relevant facts scored 0.42-0.51, the rest 0.32-0.38, so 0.4 drops the rest.
-[memory.retrieval.preferences]
-top_k = 5
-relevance_score = 0.2
+# How many of the user's newest preference records go into the system prompt of every request
+# (0 to 100; 0: none). They are listed, not searched. Facts and summaries of earlier
+# conversations are not put into the prompt; the model looks them up with its memory tools
+# (src/team_assistant/recall.py).
+max_preferences = 20
 
-[memory.retrieval.facts]
-top_k = 5
-relevance_score = 0.4
+# The most facts one search_memory call returns (1 to 100; 5 when absent). AgentCore Memory
+# returns the facts closest to the query; this is its topK.
+facts_top_k = 20
+
+# The most summaries one recall_conversations call returns (1 to 100; 5 when absent).
+summaries_top_k = 5

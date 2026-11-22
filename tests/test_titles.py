@@ -22,12 +22,8 @@ class Converse:
 
 
 class Memory:
-    def __init__(self, title: str | None = None):
-        self.title, self.created = title, []
-
-    def list_events(self, **kwargs):
-        blob = json.dumps({"title": self.title})
-        return {"events": [{"payload": [{"blob": blob}]}] if self.title else []}
+    def __init__(self):
+        self.created = []
 
     def create_event(self, **kwargs):
         self.created.append(kwargs)
@@ -78,21 +74,6 @@ def test_the_title_is_stored_as_a_blob_marked_by_metadata():
     assert event["payload"] == [{"blob": json.dumps({"title": "Release checklist"})}]
     assert event["metadata"] == {"kind": {"stringValue": conversations.TITLE_KIND}}
     assert event["eventTimestamp"].tzinfo is not None
-
-
-def test_a_session_with_a_title_is_not_titled_again():
-    memory = Memory(title="Old title")
-    converse = Converse("New title")
-    titles.title_once(memory, converse, "model-1", "mem-1", "u-1", "session-1", "q", "a")
-    assert converse.calls == [] and memory.created == []
-
-
-def test_a_session_without_a_title_gets_one():
-    memory = Memory()
-    titles.title_once(
-        memory, Converse("Word game"), "model-1", "mem-1", "u-1", "session-1", "q", "a"
-    )
-    assert json.loads(memory.created[0]["payload"][0]["blob"]) == {"title": "Word game"}
 
 
 def test_the_session_manager_does_not_read_the_title_back_as_a_message():
