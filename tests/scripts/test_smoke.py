@@ -445,6 +445,15 @@ def github_agent(consented):
     return ask_events
 
 
+def test_guardrail_passes_only_when_it_stops_the_attack_and_lets_plain_text_through():
+    def guardrail(stops: set[str]):
+        return lambda text: "GUARDRAIL_INTERVENED" if text in stops else "NONE"
+
+    assert smoke.check_guardrail(guardrail({smoke.ATTACK}))[0]
+    assert not smoke.check_guardrail(guardrail(set()))[0]
+    assert not smoke.check_guardrail(guardrail({smoke.ATTACK, smoke.PLAIN}))[0]
+
+
 def test_github_tool_passes_when_alice_gets_issues_and_bob_is_asked_to_consent():
     passed, detail = smoke.check_github_tool(github_agent({"alice"}), "alice", "bob")
     assert passed, detail

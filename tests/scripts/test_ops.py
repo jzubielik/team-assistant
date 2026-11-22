@@ -279,7 +279,8 @@ def test_bootstrap_uses_the_aws_managed_key_and_the_project_policy(stubs):
     assert ":policy/TeamAssistantCdkExecution," in cdk
     assert ":policy/TeamAssistantCdkExecutionRoles," in cdk
     assert ":policy/TeamAssistantCdkExecutionGateway," in cdk
-    assert ":policy/TeamAssistantCdkExecutionWeb " in cdk
+    assert ":policy/TeamAssistantCdkExecutionWeb," in cdk
+    assert ":policy/TeamAssistantCdkExecutionGuardrail " in cdk
     assert "AdministratorAccess" not in calls
     # The terminal output names the trusted roles without the account id.
     assert EXPECTED not in result.stdout

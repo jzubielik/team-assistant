@@ -473,7 +473,7 @@ cmd_smoke() {
 	need_aws
 	banner "smoke: end-to-end checks on $STACK as alice and bob (a few model calls; waits up to 5 min for long-term records; alice must have consented to GitHub)"
 	# Read before the call: a failed $(...) inside an argument list would not stop the script.
-	local gateway runtime memory domain client web_url web_bucket
+	local gateway runtime memory domain client web_url web_bucket guardrail
 	gateway=$(stack_output GatewayUrl)
 	web_url=$(stack_output WebUrl)
 	web_bucket=$(stack_output WebBucket)
@@ -481,11 +481,12 @@ cmd_smoke() {
 	memory=$(stack_output MemoryId)
 	domain=$(stack_output LoginDomain)
 	client=$(stack_output UserPoolClientId)
+	guardrail=$(stack_output GuardrailId)
 	py scripts/smoke.py --profile "$PROFILE" --region "$REGION" \
 		--gateway-url "$gateway" --gateway-target "$GATEWAY_TARGET" \
 		--runtime-arn "$runtime" --memory-id "$memory" \
 		--login-domain "$domain" --client-id "$client" --env "$ENV" \
-		--web-url "$web_url" --web-bucket "$web_bucket"
+		--web-url "$web_url" --web-bucket "$web_bucket" --guardrail-id "$guardrail"
 }
 
 # The page's development server. With MOCK=1 the mock agent of web/mock answers and

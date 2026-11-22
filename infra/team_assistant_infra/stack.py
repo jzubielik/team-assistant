@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import aws_cdk as cdk
+from aws_cdk import aws_bedrock as bedrock
 from aws_cdk import aws_bedrockagentcore as agentcore
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
@@ -121,6 +122,7 @@ class TeamAssistantStack(cdk.Stack):
         self.web_url = self._web()
         self.user_pool, self.user_pool_client = self._users()
         self.memory = self._memory()
+        self.guardrail = self._guardrail()
         self.github_provider = self._github(github_client_id)
         # The gateway first: the Runtime names it as the only caller it accepts.
         self.gateway = self._gateway()
@@ -395,6 +397,27 @@ class TeamAssistantStack(cdk.Stack):
         cdk.CfnOutput(self, "WebDistributionId", value=distribution.distribution_id)
         return url
 
+    def _guardrail(self) -> bedrock.CfnGuardrail:
+        """Checks text written by others (GitHub issues) for instructions to the assistant
+        before the model reads it (guard.py). Only the PROMPT_ATTACK filter, at LOW."""
+        guardrail = bedrock.CfnGuardrail(
+            self,
+            "Guardrail",
+            name=self.names.guardrail,
+            blocked_input_messaging="Blocked: the text may hold instructions to the assistant.",
+            # Required by the resource; the agent checks no model output.
+            blocked_outputs_messaging="Blocked.",
+            content_policy_config=bedrock.CfnGuardrail.ContentPolicyConfigProperty(
+                filters_config=[
+                    bedrock.CfnGuardrail.ContentFilterConfigProperty(
+                        type="PROMPT_ATTACK", input_strength="LOW", output_strength="NONE"
+                    )
+                ]
+            ),
+        )
+        cdk.CfnOutput(self, "GuardrailId", value=guardrail.attr_guardrail_id)
+        return guardrail
+
     def _runtime(self) -> agentcore.Runtime:
         """The agent itself: a container on AgentCore Runtime, callable only with a token of
         this environment's user pool (docs/adr/0003)."""
@@ -425,6 +448,8 @@ class TeamAssistantStack(cdk.Stack):
                 "GITHUB_PROVIDER": self.names.github_provider,
                 # The hosted page: its return page after a GitHub consent (config.return_url).
                 "WEB_URL": self.web_url,
+                # The guardrail that checks the GitHub tools' results (guard.py).
+                "GUARDRAIL_ID": self.guardrail.attr_guardrail_id,
                 **(TRACING_ENVIRONMENT if self.config.tracing else TRACING_OFF),
             },
             # A session that gets no request for 5 minutes is stopped (default: 15), so an
@@ -492,8 +517,8 @@ class TeamAssistantStack(cdk.Stack):
                 resources=[self.memory.attr_memory_arn],
             )
         )
-        # Long-term records (recall.py): the user's preferences and a session's summary are
-        # listed, facts and summaries are searched by the model's memory tool. No IAM
+        # Long-term records (recall.py): the user's preferences are listed, facts and
+        # summaries are searched by the model's memory tools. No IAM
         # condition on the namespace: the role is shared by every user, so it cannot tell
         # alice from bob; that separation is the actor id from the verified token
         # (identity.py).
@@ -521,6 +546,13 @@ class TeamAssistantStack(cdk.Stack):
                         arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
                     )
                 ],
+            )
+        )
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="GuardToolResults",
+                actions=["bedrock:ApplyGuardrail"],
+                resources=[self.guardrail.attr_guardrail_arn],
             )
         )
         self._github_permissions(role)

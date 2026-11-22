@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
@@ -261,6 +262,24 @@ def test_the_real_agent_has_no_tools_and_prints_nothing(managers, capsys):
     assert agent.tool_names == []
     collect(agent.stream_async("hi"))
     assert capsys.readouterr().out == ""
+
+
+def test_the_guard_sees_every_tool_result(managers):
+    from strands.hooks import AfterToolCallEvent
+
+    seen = []
+    agent = app.build_agent(
+        CONFIG, managers("m", "u", "s", "r"), "u", "s", FakeModel(), guard=seen.append
+    )
+    event = AfterToolCallEvent(
+        agent=agent,
+        selected_tool=None,
+        tool_use={"name": "get_issue"},
+        invocation_state={},
+        result={"content": []},
+    )
+    asyncio.run(agent.hooks.invoke_callbacks_async(event))
+    assert seen == [event]
 
 
 def test_over_http_the_answer_is_a_stream_of_sse_data_lines(managers, agent_env, monkeypatch):

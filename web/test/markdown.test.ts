@@ -18,6 +18,22 @@ describe("renderMarkdown", () => {
     expect(renderMarkdown("[x](data:text/html,hi)")).not.toContain("<a");
   });
 
+  it("makes no link to a host outside the list", () => {
+    expect(renderMarkdown("[x](https://example.com/?q=secret)")).not.toContain("<a");
+  });
+
+  it("makes no link to a host that only starts with github.com", () => {
+    expect(renderMarkdown("[x](https://github.com.example.com/)")).not.toContain("<a");
+  });
+
+  it("makes no link of an http address, even to github.com", () => {
+    expect(renderMarkdown("[x](http://github.com/aws/aws-cdk)")).not.toContain("<a");
+  });
+
+  it("makes no link of a bare address outside the list", () => {
+    expect(renderMarkdown("see example.com/x?q=secret")).not.toContain("<a");
+  });
+
   it("loads no image, not even from https", () => {
     expect(renderMarkdown("![logo](https://example.com/logo.png)")).not.toContain("<img");
   });

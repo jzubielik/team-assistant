@@ -25,7 +25,8 @@ more rights than the agent needs at run time.
 - **Execution policy instead of AdministratorAccess.** `infra/bootstrap/execution-policies.yaml`
   (stack `team-assistant-cdk-policies`, deployed by `make bootstrap` with the operator's
   credentials) holds `TeamAssistantCdkExecution`, `TeamAssistantCdkExecutionRoles`,
-  `TeamAssistantCdkExecutionGateway` and `TeamAssistantCdkExecutionWeb` (four, because a
+  `TeamAssistantCdkExecutionGateway`, `TeamAssistantCdkExecutionWeb` and
+  `TeamAssistantCdkExecutionGuardrail` (five, because a
   managed policy holds at most 6144 characters), the only policies of the execution role. Each
   statement covers one resource type of the stack, scoped to this project's names; a change
   that adds a resource type adds its actions.

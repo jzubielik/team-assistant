@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 # team-assistant-cdk-policies (docs/adr/0001). Deployed by `make bootstrap` before
 # `cdk bootstrap`: TeamAssistantCdkExecution, TeamAssistantCdkExecutionRoles,
-# TeamAssistantCdkExecutionGateway and TeamAssistantCdkExecutionWeb are the only policies of the
+# TeamAssistantCdkExecutionGateway, TeamAssistantCdkExecutionWeb and
+# TeamAssistantCdkExecutionGuardrail are the only policies of the
 # CloudFormation execution role
 # of this project's CDK bootstrap
 # (cdk bootstrap --cloudformation-execution-policies), replacing the AdministratorAccess default.
@@ -352,6 +353,41 @@ Resources:
               - !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:origin-access-control/*
               - !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:response-headers-policy/*
 
+  ExecutionGuardrailPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: TeamAssistantCdkExecutionGuardrail
+      Description: CloudFormation execution policy (Bedrock guardrail) of the team-assistant CDK bootstrap
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: GuardrailCreate
+            # CreateGuardrail has no resource to name; the request must carry this project's
+            # tag. TagResource: the tags sent with the create (AWS::Bedrock::Guardrail handlers).
+            Effect: Allow
+            Action: [bedrock:CreateGuardrail, bedrock:TagResource]
+            Resource:
+              - "*"
+              - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:guardrail/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: Guardrail
+            # A guardrail's ARN holds a generated id: only guardrails with this project's tag.
+            Effect: Allow
+            Action: [bedrock:UpdateGuardrail, bedrock:DeleteGuardrail,
+                     bedrock:TagResource, bedrock:UntagResource]
+            Resource: !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:guardrail/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/project: team-assistant
+          - Sid: GuardrailRead
+            # Reads carry no tag condition: CloudFormation reads a guardrail again after
+            # deleting it, and one that no longer exists has no tag to match.
+            Effect: Allow
+            Action: [bedrock:GetGuardrail, bedrock:ListTagsForResource]
+            Resource: !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:guardrail/*
+
 Outputs:
   ExecutionPolicyArn:
     Value: !Ref ExecutionPolicy
@@ -361,3 +397,5 @@ Outputs:
     Value: !Ref ExecutionGatewayPolicy
   ExecutionWebPolicyArn:
     Value: !Ref ExecutionWebPolicy
+  ExecutionGuardrailPolicyArn:
+    Value: !Ref ExecutionGuardrailPolicy

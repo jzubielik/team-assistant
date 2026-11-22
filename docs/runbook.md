@@ -101,7 +101,7 @@ the last one is closed, so an open one may still hold the first user's login.
 Check the environment and look into Memory:
 
 ```
-make smoke ENV=dev                               # fifteen PASS lines; alice and bob logged in, alice consented to GitHub
+make smoke ENV=dev                               # sixteen PASS lines; alice and bob logged in, alice consented to GitHub
 make memory ENV=dev USER=alice SESSION=<id>      # messages and long-term records of a user
 ```
 
@@ -145,7 +145,8 @@ make web-sync ENV=dev    # build and upload the page only, no stack update
 Before the first deploy after an update of this repository that changed
 `infra/bootstrap/execution-policies.yaml`, run `make bootstrap ENV=dev`.
 
-`make deploy ENV=dev` creates a new user pool, Memory, Runtime, gateway and GitHub provider. Users,
+`make deploy ENV=dev` creates a new user pool, Memory, guardrail, Runtime, gateway and GitHub
+provider. Users,
 conversations and GitHub consents of the earlier deployment are gone, and saved logins no
 longer fit: `make github`, set the new Redirect URI in the OAuth App, create the users again
 (`make user`), log in again (`make login`) and let alice consent again. `make chat` says so
@@ -228,6 +229,10 @@ bootstraps of the account (`CDKToolkit`, other projects' qualifiers) are not tou
 - **`consent failed: ...`**: the agent could not complete the binding; the text names the
   service's error code. The Runtime's log has a line with `"outcome": "consent_failed"`.
 - **The `github tool` smoke check says alice has not consented**: do the GitHub consent step.
+- **The agent says a GitHub result was withheld or could not be checked**: the guardrail
+  flagged the result, or the call to it failed. The Runtime's log has a line
+  `"event": "guardrail"` with the tool and the outcome: `intervened`, or the error type (for
+  example `AccessDeniedException`: run `make bootstrap`, then `make deploy`, again).
 - **`the browser logged in as another user`**: the browser kept another user's session. Use
   `make login ... PRINT=1` and a new private window, after closing all others (or another browser).
 - **`not authorised (HTTP 401)` in `make chat`**: the token is not accepted by the gateway or

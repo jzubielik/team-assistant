@@ -27,9 +27,9 @@ Who can do what in one environment.
    the user who used it first for as long as the session's microVM runs, and refuses it to
    anyone else: two users never share a microVM. A stopped session's id is free again; its
    history stays per user.
-5. **Permissions.** The agent's role (below) can call one model, read and write one Memory and
-   get users' GitHub tokens from one provider; the gateway's role can only exchange tokens
-   through its own provider and invoke this Runtime. Deployments run with a
+5. **Permissions.** The agent's role (below) can call one model, read and write one Memory,
+   apply one guardrail and get users' GitHub tokens from one provider; the gateway's role can
+   only exchange tokens through its own provider and invoke this Runtime. Deployments run with a
    separate, limited role (docs/adr/0001).
 
 ## Runtime role
@@ -47,6 +47,7 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 | `bedrock-agentcore:ListEvents` | this environment's Memory | load the conversation; read a conversation's history and title for the web page |
 | `bedrock-agentcore:ListSessions` | this environment's Memory | list the asking user's conversations for the web page (the actor comes from the token) |
 | `bedrock-agentcore:DeleteEvent` | this environment's Memory | the session manager replaces stored agent state |
+| `bedrock:ApplyGuardrail` | this environment's guardrail | check the GitHub tools' results for instructions to the assistant before the model reads them |
 | `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | the model's memory tools search the user's facts, or the summaries of the user's conversations |
 | `bedrock-agentcore:ListMemoryRecords` | this environment's Memory | list the user's preferences for the system prompt |
 | `bedrock-agentcore:GetResourceOauth2Token` | the default token vault, this environment's GitHub provider, this Runtime's workload identity | get the asking user's GitHub token, or a consent URL |
@@ -181,8 +182,9 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
   `connect-src` names exactly the gateway and the login domain; the browser enforces both.
   `scripts/web_files.py` refuses an HTML file with an inline script; only origins of the stack
   outputs reach the policy.
-- **Model text** is rendered by `markdown-it` with raw HTML off, images off and only `http(s)`
-  links, which open with `noopener noreferrer`; everything else the page draws goes in as text.
+- **Model text** is rendered by `markdown-it` with raw HTML off, images off and only `https`
+  links to `github.com`, which open with `noopener noreferrer`; any other address stays text,
+  so text the agent read cannot hand the user a link to another site.
 - **GitHub consent.** `callback.html` holds no token and only relays `session_id` and `state` to
   the chat tab; the chat tab sends a consent only for the state its question waits for. The
   agent takes the return URL from its own list (`cli`, `web-local`, `web` from the stack's
@@ -229,8 +231,10 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
 - Script injected into the page could read the tab's tokens from `sessionStorage`; the CSP
   (no inline script, scripts only from the page's origin) and the text-only rendering are what
   prevent such script.
-- An issue's text can try to instruct the model; it is marked as data, which lowers but does
-  not remove that risk. The tools only read public repositories.
+- An issue's text can try to instruct the model. The GitHub tools' results are marked as data
+  and checked by the environment's guardrail (PROMPT_ATTACK, LOW) before the model reads them;
+  a result it flags, or one that cannot be checked, is withheld. Neither removes the risk. The
+  tools only read public repositories, and the page links only to github.com.
 - What the assistant writes, about an issue or as its own suggestion, becomes part of that
   conversation's summary. Summaries are returned only by `recall_conversations`, for questions
   about earlier conversations, marked as data and as the assistant's past suggestions; the

@@ -29,6 +29,7 @@ LIMITS = {
     "exchange_secret": (r"[A-Za-z0-9/_+=.@-]+", 512),
     "gateway": (r"([0-9a-zA-Z][-]?){1,48}", 48),
     "web_bucket": (r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", 63),
+    "guardrail": (r"[0-9a-zA-Z_-]+", 50),
     "audience": (r"[\x21\x23-\x5B\x5D-\x7E]+", 256),
 }
 

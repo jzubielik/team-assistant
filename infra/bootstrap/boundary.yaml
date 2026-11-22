@@ -75,6 +75,15 @@ Resources:
             Effect: Allow
             Action: [bedrock-agentcore:RetrieveMemoryRecords, bedrock-agentcore:ListMemoryRecords]
             Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/${MemoryName}-*
+          - Sid: GuardToolResults
+            # The guardrail's ARN holds a generated id, not its name: its tags pick it.
+            Effect: Allow
+            Action: bedrock:ApplyGuardrail
+            Resource: !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:guardrail/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/project: team-assistant
+                aws:ResourceTag/env: !Ref Env
           - Sid: WorkloadIdentityTokens
             Effect: Allow
             Action: [bedrock-agentcore:GetWorkloadAccessToken, bedrock-agentcore:GetWorkloadAccessTokenForJWT,

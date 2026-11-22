@@ -30,7 +30,9 @@ https://github.com/user-attachments/assets/41862dc0-2811-4d38-b5fb-035fe27bb614
   up facts and earlier conversations with its memory tools.
 - **Acting with the user's own credentials.** The GitHub tools get the user's GitHub token from
   AgentCore Identity after a one-time consent in the browser (OAuth authorization code). The
-  user needs no AWS credentials, and the token never reaches the model or the logs.
+  user needs no AWS credentials, and the token never reaches the model or the logs. A Bedrock
+  guardrail checks what the tools return for instructions to the assistant before the model
+  reads it.
 - **A static web page.** S3 behind CloudFront, sign-in with Cognito (PKCE), streamed Markdown
   answers, the GitHub consent inside the chat, and a list of earlier conversations read from
   Memory. No server of its own.
@@ -112,7 +114,7 @@ make destroy ENV=dev
 | [docs/architecture.md](docs/architecture.md) | the parts and the path of a request |
 | [docs/runbook.md](docs/runbook.md) | deploy, use, tear down, troubleshoot |
 | [docs/security.md](docs/security.md) | who can do what; every permission of the agent's role; residual risks |
-| [docs/adr/](docs/adr/) | decisions: CDK bootstrap, Cognito, the JWT authorizer, the gateway as the only entry, the page's hosting, long-term memory |
+| [docs/adr/](docs/adr/) | decisions: CDK bootstrap, Cognito, the JWT authorizer, the gateway as the only entry, the page's hosting, long-term memory, the guardrail |
 
 ## License
 

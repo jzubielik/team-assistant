@@ -17,6 +17,7 @@ flowchart TB
         mem["AgentCore Memory<br/>events, preferences, facts, summaries"]
         model["Bedrock model"]
         idn["AgentCore Identity<br/>GitHub provider, token vault"]
+        guard["Bedrock guardrail<br/>prompt-attack filter"]
     end
     github["GitHub API"]
 
@@ -30,6 +31,7 @@ flowchart TB
     agent --> mem
     agent --> model
     agent -->|user's GitHub token| idn
+    agent -->|GitHub tool results| guard
     idn --> github
 ```
 
@@ -43,6 +45,7 @@ The agent's modules:
 | `prompts.py` | the system prompt: fixed instructions, then the user's preferences |
 | `app.py` | model call, streamed answer |
 | `github.py` | tools `list_issues`, `get_issue`, with the user's GitHub token |
+| `guard.py` | checks the GitHub tools' results with the guardrail before the model reads them |
 | `consent.py` | completes a GitHub consent |
 | `conversations.py` | the page's conversation list and history |
 | `titles.py` | a title after a session's first answer |
@@ -84,7 +87,9 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
 6. The Strands agent sends the history and the new message to the model and streams the answer
    back as server-sent events; the session manager stores both messages as events. A request
    gets at most six turns (a model call and the tool calls it asks for); one whose sixth turn
-   still asks for a tool ends with an error event. Before a
+   still asks for a tool ends with an error event. The result of a GitHub tool goes to the
+   environment's guardrail first (`guard.py`, filter `PROMPT_ATTACK`); a result it flags, or
+   one that cannot be checked, is replaced by a refusal before the model reads it. Before a
    model call that would fill 70 % of the model's context window, the agent first replaces
    the oldest messages by a summary the same model writes (one more model call); the summary
    is stored with the agent's state and restored with the session. The stored events, and so
@@ -122,7 +127,8 @@ The return URL is registered on the Runtime's workload identity by `make deploy`
    the agent's audience, the same app client. Tokens stay in the tab's `sessionStorage`.
 3. Messages go to `<GatewayUrl>/agent/invocations` with `client: "web"` (`"web-local"` on the
    development server); the answer streams as
-   server-sent events and is rendered from Markdown (raw HTML, images and non-http links off).
+   server-sent events and is rendered from Markdown (raw HTML and images off, links only to
+   `https://github.com`).
 4. `{"conversations": {}}` and `{"history": {}}` ask the agent for the user's sessions
    (`ListSessions`, titles from a title event) and one session's turns (`ListEvents`); no model
    call, the actor is always the token's. After a session's first answer the agent asks the
@@ -138,7 +144,7 @@ The return URL is registered on the Runtime's workload identity by `make deploy`
 |---|---|---|
 | `team-assistant-cdk-policies`, `TeamAssistantToolkit` | the CDK bootstrap of this project: deploy permissions, assets bucket, image repository | once per account and region |
 | `team-assistant-<env>-boundary` | the permissions boundary of the environment's roles | with the environment |
-| `TeamAssistant-<env>` | user pool, app client, login domain and style, resource server (the audience), Memory, Runtime, the agent's role, the gateway with its target and role, the token exchange provider and its placeholder secret, GitHub credential provider and its client secret; the page's bucket, CloudFront distribution, origin access control and response headers policy | with the environment |
+| `TeamAssistant-<env>` | user pool, app client, login domain and style, resource server (the audience), Memory, the guardrail, Runtime, the agent's role, the gateway with its target and role, the token exchange provider and its placeholder secret, GitHub credential provider and its client secret; the page's bucket, CloudFront distribution, origin access control and response headers policy | with the environment |
 | (none) | the GitHub OAuth App, created by hand in GitHub; the token vault, one per account and region, created by AgentCore | outlast the environment |
 
 ## Not built

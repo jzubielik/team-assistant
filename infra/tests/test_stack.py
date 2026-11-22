@@ -66,6 +66,7 @@ def test_stack_has_only_the_expected_resource_types():
         "AWS::IAM::Policy",
         "AWS::SecretsManager::Secret",
         "AWS::BedrockAgentCore::OAuth2CredentialProvider",
+        "AWS::Bedrock::Guardrail",
         # The web page: no Lambda function, no custom resource.
         "AWS::S3::Bucket",
         "AWS::S3::BucketPolicy",
@@ -142,6 +143,7 @@ def test_tracing_is_off_by_default_and_the_agent_then_exports_nothing():
     (runtime,) = resources(TEMPLATE, "AWS::BedrockAgentCore::Runtime")
     variables = dict(runtime["Properties"]["EnvironmentVariables"])
     del variables["MEMORY_ID"], variables["GITHUB_PROVIDER"], variables["WEB_URL"]
+    del variables["GUARDRAIL_ID"]
     assert variables == {
         # The Runtime adds none of its OpenTelemetry settings to the container.
         "DISABLE_ADOT_OBSERVABILITY": "true",
@@ -161,6 +163,7 @@ def test_runtime_tracing_settings_keep_content_out_and_spans_deletable():
     (runtime,) = resources(traced, "AWS::BedrockAgentCore::Runtime")
     variables = dict(runtime["Properties"]["EnvironmentVariables"])
     del variables["MEMORY_ID"], variables["GITHUB_PROVIDER"], variables["WEB_URL"]
+    del variables["GUARDRAIL_ID"]
     disabled = variables.pop("OTEL_PYTHON_DISABLED_INSTRUMENTATIONS").split(",")
     assert variables == {
         # Spans go to the agent's own log group, which make destroy deletes.
@@ -286,6 +289,32 @@ def test_runtime_role_can_retrieve_records():
     ]
     assert records["Resource"] == {"Fn::GetAtt": ["Memory", "MemoryArn"]}
     assert records["Effect"] == "Allow"
+
+
+def test_the_guardrail_checks_inputs_for_prompt_attacks_only():
+    (guardrail,) = resources(TEMPLATE, "AWS::Bedrock::Guardrail")
+    properties = guardrail["Properties"]
+    assert properties["Name"] == "team-assistant-dev-guardrail"
+    assert properties["ContentPolicyConfig"] == {
+        "FiltersConfig": [
+            {"Type": "PROMPT_ATTACK", "InputStrength": "LOW", "OutputStrength": "NONE"}
+        ]
+    }
+    (runtime,) = resources(TEMPLATE, "AWS::BedrockAgentCore::Runtime")
+    variables = runtime["Properties"]["EnvironmentVariables"]
+    assert variables["GUARDRAIL_ID"] == {"Fn::GetAtt": ["Guardrail", "GuardrailId"]}
+
+
+def test_runtime_role_can_apply_this_guardrail_only():
+    statements = {
+        s.get("Sid"): s
+        for policy in resources(TEMPLATE, "AWS::IAM::Policy")
+        for s in policy["Properties"]["PolicyDocument"]["Statement"]
+    }
+    guard = statements["GuardToolResults"]
+    assert guard["Action"] == "bedrock:ApplyGuardrail"
+    assert guard["Resource"] == {"Fn::GetAtt": ["Guardrail", "GuardrailArn"]}
+    assert guard["Effect"] == "Allow"
 
 
 def test_runtime_role_can_get_and_complete_github_tokens_of_this_provider_only():
@@ -618,6 +647,7 @@ def test_outputs():
         "LoginDomain",
         "Audience",
         "MemoryId",
+        "GuardrailId",
         "RuntimeArn",
         "GatewayUrl",
         "GithubCallbackUrl",

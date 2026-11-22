@@ -39,7 +39,7 @@ from typing import Any
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
-from strands.hooks import BeforeToolCallEvent
+from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.models import BedrockModel, Model
 from strands.types.exceptions import ContextWindowOverflowException, ModelThrottledException
 
@@ -48,6 +48,7 @@ from team_assistant.config import MAX_TURNS, AgentConfig, load_config, return_ur
 from team_assistant.consent import ConsentError, complete_consent
 from team_assistant.conversations import history, list_conversations
 from team_assistant.github import github_tools
+from team_assistant.guard import guard_hook
 from team_assistant.identity import IdentityError, actor_from_headers, bearer_from_headers
 from team_assistant.logs import configure_stdout
 from team_assistant.memory import session_manager
@@ -133,8 +134,10 @@ def build_agent(
     model: Model | None = None,
     tools: list | None = None,
     preferences: list[str] | None = None,
+    guard: Callable | None = None,
 ) -> Agent:
-    """The Strands agent for one request. Tests pass their own ``model``."""
+    """The Strands agent for one request. Tests pass their own ``model``. ``guard`` checks
+    tool results before the model reads them (guard.py)."""
     agent = Agent(
         model=model
         or QuietBedrockModel(model_id=config.model_id, max_tokens=config.max_output_tokens),
@@ -153,6 +156,8 @@ def build_agent(
         trace_attributes={"actor.id": actor, "session.id": session_id},
     )
     agent.hooks.add_callback(BeforeToolCallEvent, _refuse_wrong_arguments)
+    if guard is not None:
+        agent.hooks.add_callback(AfterToolCallEvent, guard)
     return agent
 
 
@@ -237,6 +242,12 @@ def _memory_client(region: str) -> Any:
     return boto3.client("bedrock-agentcore", region_name=region)
 
 
+def _guard_client(region: str) -> Any:
+    import boto3  # the agent's own role calls ApplyGuardrail
+
+    return boto3.client("bedrock-runtime", region_name=region)
+
+
 async def _read_memory(
     payload: dict, context: Any, make_client: Callable[[str], Any]
 ) -> AsyncIterator[dict]:
@@ -289,6 +300,7 @@ async def respond(
     make_memory_client: Callable[[str], Any] | None = None,
     store_title: Callable[..., None] | None = None,
     recall: Callable[..., tuple[list[str], list]] | None = None,
+    make_guard_client: Callable[[str], Any] | None = None,
 ) -> AsyncIterator[dict]:
     """Handle one request (see the module docstring). The keyword arguments are for tests."""
     if isinstance(payload, dict) and "consent" in payload:
@@ -351,10 +363,15 @@ async def respond(
             recall or _default_recall, client, memory_id, actor, session_id, config
         )
         tools = [*tools, *memory]
+        guard = guard_hook(
+            lambda: (make_guard_client or _guard_client)(region), os.environ.get("GUARDRAIL_ID")
+        )
         called: set[str] = set()
         stopped = False
         with open_session(memory_id, actor, session_id, region) as session_mgr:
-            agent = build_agent(config, session_mgr, actor, session_id, model, tools, preferences)
+            agent = build_agent(
+                config, session_mgr, actor, session_id, model, tools, preferences, guard
+            )
             # The session manager has restored the conversation into the agent: no message
             # means this is the session's first answer, the only one that gets a title. (Asking
             # Memory for a title event instead finds it only after a delay, so each answer would

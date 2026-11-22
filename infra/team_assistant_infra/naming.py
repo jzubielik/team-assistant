@@ -36,7 +36,8 @@ CDK bootstrap of this project (docs/adr/0001), shared by every environment of an
   alphanumerics here because it is part of the assets bucket name.
 - Toolkit stack TeamAssistantToolkit, policies stack team-assistant-cdk-policies.
 - Managed policies TeamAssistantCdkExecution, TeamAssistantCdkExecutionRoles,
-  TeamAssistantCdkExecutionGateway, TeamAssistantCdkExecutionWeb (several: a managed policy
+  TeamAssistantCdkExecutionGateway, TeamAssistantCdkExecutionWeb,
+  TeamAssistantCdkExecutionGuardrail (several: a managed policy
   holds at most 6144 characters)
   and TeamAssistantCdkPermissionsBoundary-<env>: [\\w+=,.@-]+, <= 128 (iam CreatePolicy
   policyNameType).
@@ -62,6 +63,7 @@ EXECUTION_POLICIES = (
     "TeamAssistantCdkExecutionRoles",
     "TeamAssistantCdkExecutionGateway",
     "TeamAssistantCdkExecutionWeb",
+    "TeamAssistantCdkExecutionGuardrail",
 )
 BOUNDARY_POLICY_PREFIX = "TeamAssistantCdkPermissionsBoundary-"
 BOOTSTRAP_PARAMETER = f"/cdk-bootstrap/{CDK_QUALIFIER}/version"
@@ -113,6 +115,7 @@ class Names:
     audience: str
     gateway: str
     web_bucket: str
+    guardrail: str
 
 
 def names(env: str, account: str, region: str, login_suffix: str) -> Names:
@@ -143,4 +146,5 @@ def names(env: str, account: str, region: str, login_suffix: str) -> Names:
         audience=f"https://{PROJECT}-{env}.agent",
         gateway=f"{PROJECT}-{env}-gateway",
         web_bucket=f"ta-{env}-web-{login_suffix}",
+        guardrail=f"{PROJECT}-{env}-guardrail",
     )
