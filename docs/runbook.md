@@ -5,8 +5,9 @@ Every command is a `make` target (`make help` lists them). Commands that touch A
 
 ## Before you start
 
-1. Install Docker, GNU make and the AWS CLI v2 on the host. Everything else runs in the tool
-   runner image.
+1. Install Docker, GNU make and the AWS CLI v2 on the host; the targets that use a saved
+   login (`login`, `chat`, `ask`, `memory`, `smoke`, `seed`, `eval`) and `compare` also need
+   `uv` there, and `eval` needs `git`. Everything else runs in the tool runner image.
 2. `cp local.mk.example local.mk` and fill in `PROFILE`, `REGION` and `ACCOUNT_<env>`.
    `local.mk` is gitignored. Settings are never read from the shell environment.
    Add `LOGIN_SUFFIX_<env> = <output of openssl rand -hex 4>` once per environment and keep
@@ -83,7 +84,7 @@ one: every deployment's provider has a new address).
 ## Users and a first conversation
 
 ```
-make user ENV=dev USER=alice     # asks twice for a password; no message is sent to anyone
+make user ENV=dev USER=alice     # asks for a password, twice (empty answer: a random one, shown once); no message is sent
 make login ENV=dev USER=alice    # opens Cognito's managed login page; saves the tokens
 make chat ENV=dev USER=alice     # prints the session id, then a prompt
 ```
@@ -103,6 +104,9 @@ Check the environment and look into Memory:
 ```
 make smoke ENV=dev                               # sixteen PASS lines; alice and bob logged in, alice consented to GitHub
 make memory ENV=dev USER=alice SESSION=<id>      # messages and long-term records of a user
+make seed ENV=dev USER=carol                     # scripted conversations into carol's memory; records in measurements/<date>-<env>-carol-seed.json
+make eval ENV=dev USER=carol LABEL=first         # asks carol's memory the cases of scripts/evals.toml; result in measurements/ (gitignored)
+make compare A=<result> B=<result>               # two results of make eval, case by case
 ```
 
 Long-term records appear some time after a conversation (the strategies run in the
@@ -113,6 +117,33 @@ waits up to five minutes for a record.
 answers with a word). Its words start with `smk`, and it deletes the records holding them at
 its start and end (`purge: N record(s) ... deleted`); records extracted after one run are
 deleted at the start of the next.
+
+`make seed` runs the conversations of `scripts/seed.toml` as one user, each in a session of
+its own, and waits until the number of that user's fact and summary records has stopped
+changing (at most 15 minutes). AgentCore Memory decides which records come of the
+conversations: it may join what two messages said into one record or split one message
+into several. The command
+writes the conversations and every fact, preference and summary record of the user, with
+all the fields the service returns, oldest first, to a JSON file. Use a user of its own
+(`make user`, `make login`), so the records do not mix with those of `make smoke`. The
+records stay until the environment is destroyed.
+
+`make eval` asks that user every case of `scripts/evals.toml`, once (`RUNS=<n>` asks each
+case n times), each time in a new session. Four checks run on every answer. Three need no
+model: that there is an answer, the case's words in it, and the tool the model called. The
+fourth, the judge, asks the agent's own model, with the operator's profile, whether the
+answer agrees with the case's `expected` answer; a case without one is not judged. The
+expected words and answers follow from `scripts/seed.toml`. The result is a JSON file named
+after `LABEL`: the commit and the settings of the working tree, then for every case and run
+the answer, each tool call with its arguments and result, the tokens, the seconds and the
+checks. A check is an aid, not a verdict: read the answers. A reader's verdicts go into a
+file beside the result, `<result>-verdicts.json`:
+`{"<case id>#<run>": {"verdict": "right" | "wrong" | "incomplete", "note": "..."}}`.
+The sessions of `make eval` are stored like any conversation and change the user's memory:
+seed a new user for a result that is to be compared.
+`make compare` prints two results side by side: per case the runs that passed the three
+checks without a model, the runs the judge passed, the runs judged right by a reader, the
+tool calls and the input tokens per run, and above them the settings that differ.
 
 ## GitHub consent (once per user and deployment)
 
@@ -207,7 +238,7 @@ bootstraps of the account (`CDKToolkit`, other projects' qualifiers) are not tou
   type), or `"event": "records_not_found"` (Memory found no preference records); then
   `make memory ... USER=<name> SESSION=<id>` shows whether the records exist. A fact or an
   earlier conversation reaches the answer only when the model calls `search_memory` or
-  `recall_conversations`.
+  `recall_conversations`; `make eval` writes down every tool call.
 - **`GITHUB_CLIENT_ID_<env> is not set`**: add the OAuth App's client id to `local.mk`.
 - **`WARNING ExplicitAuthFlows.1: 'ALLOW_TOKEN_EXCHANGE_IMPERSONATION' is not one of [...]`**
   at synth or deploy: CDK's validation predates Cognito's token exchange; the service accepts the

@@ -62,7 +62,8 @@ The request path, the GitHub consent and the web page step by step:
 
 - **AWS-maintained agent components only:** `strands-agents`, `bedrock-agentcore`, `boto3`,
   `aws-opentelemetry-distro`, `aws-cdk-lib` and `constructs` (with the `aws-cdk` command
-  line). No community memory back ends, tool packages or MCP servers.
+  line), and `strands-agents-evals` for `make eval`. No community memory back ends, tool
+  packages or MCP servers.
 - **No caller-chosen keys:** memory is never keyed by a value the client can set.
 - **No long-lived secrets** in the repository, images or environment variables. Account ids and
   other identifiers live only in the gitignored `local.mk`; git hooks and gitleaks stop a
@@ -76,12 +77,13 @@ The request path, the GitHub consent and the web page step by step:
   ([docs/security.md](docs/security.md), "Traces").
 - Separation between users rests on the agent's code: one IAM role serves all users.
 - The GitHub tools only read public repositories.
-- Not tested under load.
+- Not tested under load; answers from long-term memory are checked only on scripted
+  conversations (`make seed`, `make eval`).
 - The web page is desktop only.
 
 ## Use it
 
-You need an AWS account, Docker and a GitHub account. Everything runs through `make`;
+You need an AWS account, Docker, `uv` and a GitHub account. Everything runs through `make`;
 `make help` lists the targets. [docs/runbook.md](docs/runbook.md) goes from an empty account to
 a conversation.
 
@@ -105,7 +107,7 @@ make destroy ENV=dev
 | `src/team_assistant/` | the agent (Python, Strands) |
 | `web/` | the page (TypeScript, Vite, Vitest) |
 | `infra/` | the stack and the CDK bootstrap (AWS CDK, Python) |
-| `scripts/` | the operator's tools: login, chat, users, smoke |
+| `scripts/` | the operator's tools: login, chat, users, smoke, evaluation |
 | `docker/` | the agent image and the pinned runner image |
 | `config/agent.toml` | model, memory, tracing |
 

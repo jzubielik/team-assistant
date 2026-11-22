@@ -1,0 +1,229 @@
+# Conversations for make seed (scripts/seed.py): they fill one user's long-term memory, so
+# that a search has many records to choose from. Each conversation runs in a new session.
+# AgentCore Memory, not this file, decides which records come of them; make seed writes down
+# what was stored.
+#
+# Several services share a language, a team or a deploy day on purpose: a question such as
+# "Which services are written in Go?" then has many answers.
+
+# One service per conversation, the same two sentences for each.
+
+[[conversation]]
+messages = [
+    "The ledger service is written in Go and owned by the payments team.",
+    "The ledger service is deployed from the main branch every Wednesday.",
+]
+
+[[conversation]]
+messages = [
+    "The invoicing service is written in Java and owned by the payments team.",
+    "The invoicing service is deployed from the main branch every Monday.",
+]
+
+[[conversation]]
+messages = [
+    "The payouts service is written in Go and owned by the payments team.",
+    "The payouts service is deployed from the main branch every Thursday.",
+]
+
+[[conversation]]
+messages = [
+    "The refunds service is written in Kotlin and owned by the payments team.",
+    "The refunds service is deployed from the main branch every Tuesday.",
+]
+
+[[conversation]]
+messages = [
+    "The fraud-check service is written in Python and owned by the payments team.",
+    "The fraud-check service is deployed from the main branch every Friday.",
+]
+
+[[conversation]]
+messages = [
+    "The pricing service is written in Go and owned by the payments team.",
+    "The pricing service is deployed from the main branch every Monday.",
+]
+
+[[conversation]]
+messages = [
+    "The tax service is written in Java and owned by the payments team.",
+    "The tax service is deployed from the main branch every Wednesday.",
+]
+
+[[conversation]]
+messages = [
+    "The catalog service is written in Go and owned by the discovery team.",
+    "The catalog service is deployed from the main branch every Monday.",
+]
+
+[[conversation]]
+messages = [
+    "The recommendations service is written in Python and owned by the discovery team.",
+    "The recommendations service is deployed from the main branch every Friday.",
+]
+
+[[conversation]]
+messages = [
+    "The ranking service is written in Rust and owned by the discovery team.",
+    "The ranking service is deployed from the main branch every Tuesday.",
+]
+
+[[conversation]]
+messages = [
+    "The indexer service is written in Go and owned by the discovery team.",
+    "The indexer service is deployed from the main branch every Thursday.",
+]
+
+[[conversation]]
+messages = [
+    "The auth service is written in Go and owned by the platform team.",
+    "The auth service is deployed from the main branch every Wednesday.",
+]
+
+[[conversation]]
+messages = [
+    "The gateway-api service is written in Rust and owned by the platform team.",
+    "The gateway-api service is deployed from the main branch every Tuesday.",
+]
+
+[[conversation]]
+messages = [
+    "The config service is written in Go and owned by the platform team.",
+    "The config service is deployed from the main branch every Friday.",
+]
+
+[[conversation]]
+messages = [
+    "The scheduler service is written in Go and owned by the platform team.",
+    "The scheduler service is deployed from the main branch every Monday.",
+]
+
+[[conversation]]
+messages = [
+    "The notifications service is written in TypeScript and owned by the engagement team.",
+    "The notifications service is deployed from the main branch every Thursday.",
+]
+
+[[conversation]]
+messages = [
+    "The email service is written in Python and owned by the engagement team.",
+    "The email service is deployed from the main branch every Monday.",
+]
+
+[[conversation]]
+messages = [
+    "The push service is written in TypeScript and owned by the engagement team.",
+    "The push service is deployed from the main branch every Wednesday.",
+]
+
+[[conversation]]
+messages = [
+    "The reporting service is written in Scala and owned by the analytics team.",
+    "The reporting service is deployed from the main branch every Friday.",
+]
+
+[[conversation]]
+messages = [
+    "The metrics service is written in Go and owned by the analytics team.",
+    "The metrics service is deployed from the main branch every Tuesday.",
+]
+
+# Other things a team states: no service, different sentences.
+
+[[conversation]]
+messages = [
+    "Incidents of the payments team are tracked in the #pay-incidents channel.",
+    "The payments team has its stand-up at 9:30 every weekday.",
+]
+
+[[conversation]]
+messages = [
+    "The discovery team reviews search quality every second Friday.",
+    "The discovery team keeps its runbooks in the docs/runbooks folder.",
+]
+
+[[conversation]]
+messages = [
+    "Production runs in two availability zones.",
+    "The staging environment is rebuilt every night.",
+]
+
+[[conversation]]
+messages = [
+    "Every pull request needs two approvals before it is merged.",
+    "No deployments are made in the last week of December.",
+]
+
+[[conversation]]
+messages = [
+    "Logs are kept for 30 days in production and for 7 days in staging.",
+    "Database backups are taken every night at 02:00 UTC.",
+]
+
+[[conversation]]
+messages = [
+    "I'm on call for the payments team this week.",
+    "The on-call shift changes every Monday at 10:00.",
+]
+
+# Two services in one conversation.
+
+[[conversation]]
+messages = [
+    "The sessions service is written in Go and the rate-limiter service in Rust. Both are owned by the platform team.",
+    "The sessions service is deployed every Wednesday and rate-limiter every Tuesday.",
+]
+
+[[conversation]]
+messages = [
+    "The search-api service is written in Rust and the suggest service in Python. Both are owned by the discovery team.",
+    "The search-api service is deployed every Thursday and suggest every Friday.",
+]
+
+[[conversation]]
+messages = [
+    "The sms service is written in TypeScript and the webhooks service in Go. Both are owned by the engagement team.",
+    "The sms service is deployed every Monday and webhooks every Thursday.",
+]
+
+[[conversation]]
+messages = [
+    "The exports service is written in Scala and the dashboards service in TypeScript. Both are owned by the analytics team.",
+    "The exports service is deployed every Tuesday and dashboards every Wednesday.",
+]
+
+# Preferences. The last conversation changes what the first one asked for.
+[[conversation]]
+messages = [
+    "When you show code, use Python unless I say otherwise.",
+    "Keep code examples under ten lines.",
+]
+
+[[conversation]]
+messages = [
+    "When I ask for a comparison, answer with a table.",
+    "Put the conclusion first, then the reasons.",
+]
+
+[[conversation]]
+messages = [
+    "Use UTC for every time you mention.",
+    "Write dates as YYYY-MM-DD.",
+]
+
+[[conversation]]
+messages = [
+    "When I ask about an incident, give me the runbook step first.",
+    "Skip the background unless I ask for it.",
+]
+
+[[conversation]]
+messages = [
+    "Call the environments dev, staging and prod, never test or live.",
+    "Use metric units.",
+]
+
+[[conversation]]
+messages = [
+    "From now on use TypeScript for code examples, not Python.",
+]

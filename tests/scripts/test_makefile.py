@@ -13,13 +13,13 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGETS = (
     "help", "runner", "shell", "arm64", "setup", "check", "synth",
     "bootstrap", "diff", "deploy", "destroy", "status", "user", "login", "chat", "ask",
-    "memory", "smoke", "github", "web", "web-sync", "unbootstrap",
+    "memory", "smoke", "seed", "eval", "compare", "github", "web", "web-sync", "unbootstrap",
     "hooks", "leaks", "lint", "audit",
 )  # fmt: skip
 # Variables that must not leak from the developer's shell (or from an outer make) into a test.
 DROPPED = {
     "ENV", "PROFILE", "REGION", "ACCOUNT", "GITHUB_CLIENT_ID", "LOGIN_SUFFIX", "CONFIG_ORIGINS",
-    "TA_USER", "TA_SESSION", "TA_PROMPT", "TA_MOCK",
+    "TA_USER", "TA_SESSION", "TA_PROMPT", "TA_MOCK", "TA_LABEL", "TA_RUNS", "TA_A", "TA_B",
     "NATIVE", "MAKEFLAGS", "MAKELEVEL", "MFLAGS",
     "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
 }  # fmt: skip

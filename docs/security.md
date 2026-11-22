@@ -114,6 +114,9 @@ grant it.
 - **The agent**, for the user of the current request only: the actor id comes from the verified
   token, never from the request body.
 - **The operator**, with the admin profile: AgentCore Memory's API lists any actor's events.
+  `make seed` and `make eval` write a test user's conversations and records to the gitignored
+  `measurements/`, and the judge of `make eval` sends that user's questions and answers to
+  the model.
 - **Not the deploy role**: the CloudFormation execution policy has no event actions.
 
 ## Who can use a user's GitHub token

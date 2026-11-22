@@ -243,11 +243,12 @@ def test_destroy_with_an_empty_repository_deletes_nothing(stubs):
     assert image_deletions(calls) == []
 
 
-@pytest.mark.parametrize("command", ["smoke"])
+@pytest.mark.parametrize("command", ["smoke", "seed", "eval"])
 def test_a_missing_stack_stops_at_the_first_output_with_one_message(stubs, command):
     # A failed $(stack_output ...) inside an argument list does not stop the script, which
     # would then start Python with empty arguments.
-    result, _ = ops(stubs, command, extra={"STUB_NO_STACK": "1"})
+    extra = {"STUB_NO_STACK": "1", "TA_USER": "carol", "TA_LABEL": "first"}
+    result, _ = ops(stubs, command, extra=extra)
     assert result.returncode != 0
     assert result.stderr.count("could not read the outputs") == 1, result.stderr
     assert "Traceback" not in result.stderr
