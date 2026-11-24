@@ -31,7 +31,7 @@ def _no_long_term_memory(monkeypatch):
     from team_assistant import app
 
     monkeypatch.setattr(app, "_default_recall", lambda *args: ([], []))
-    monkeypatch.setattr(app, "_memory_client", lambda region: MEMORY_CLIENT)
+    monkeypatch.setattr(app, "_memory_client", lambda gateway_url, region, token: MEMORY_CLIENT)
 
 
 class FakeModel(Model):
@@ -78,8 +78,9 @@ class FakeModel(Model):
 class FakeSessionManager(SessionManager):
     """Keeps the messages in a list; records how it was opened and that it was closed."""
 
-    def __init__(self, memory_id, actor_id, session_id, region):
+    def __init__(self, memory_id, actor_id, session_id, region, client=None):
         self.opened_with = (memory_id, actor_id, session_id, region)
+        self.client = client
         self.messages, self.closed = [], False
 
     def __enter__(self):
@@ -132,6 +133,7 @@ def managers():
 def agent_env(monkeypatch):
     monkeypatch.setenv("MEMORY_ID", "mem-1")
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    monkeypatch.setenv("MEMORY_GATEWAY_URL", "https://gw-1.gateway.example")
 
 
 def collect(stream) -> list:

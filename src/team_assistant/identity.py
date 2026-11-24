@@ -28,8 +28,9 @@ class IdentityError(Exception):
 def bearer_from_headers(headers: Mapping[str, str] | None) -> str:
     """The JWT of the ``Authorization: Bearer <jwt>`` header, checked for its three parts.
 
-    The agent passes it on unchanged when it completes a user's GitHub consent (consent.py):
-    it is the token the Runtime verified, so it names the user who sent this request.
+    The agent passes it on unchanged to the Memory gateway (memory.py) and when it completes a
+    user's GitHub consent (consent.py): it is the token the Runtime verified, so it names the
+    user who sent this request.
     """
     value = next((v for k, v in (headers or {}).items() if k.lower() == "authorization"), None)
     if not value:

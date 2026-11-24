@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from team_assistant.config import NAMESPACES, AgentConfig, load_config
+from team_assistant import config
+from team_assistant.config import (
+    NAMESPACES,
+    TOKEN_CLAIMS,
+    AgentConfig,
+    claim_namespaces,
+    load_config,
+)
 
 VALID = 'model_id = "m"\nmax_output_tokens = 100\n[memory]\nevent_expiry_days = 30\n'
 
@@ -55,6 +62,27 @@ def test_namespaces_start_and_end_with_a_slash():
     # A search matches a prefix: without the trailing slash, /preferences/abc would also
     # match /preferences/abcd... (AgentCore devguide, "Memory organization").
     assert all(t.startswith("/") and t.endswith("/") for t in NAMESPACES.values())
+
+
+def test_every_strategy_has_a_token_claim():
+    assert set(TOKEN_CLAIMS) == set(NAMESPACES)
+
+
+def test_claim_namespaces_are_one_actors_namespaces():
+    assert claim_namespaces("u-1") == {
+        "memory_preferences": "/preferences/u-1/",
+        "memory_facts": "/facts/u-1/",
+        "memory_summaries": "/summaries/u-1/",
+    }
+
+
+@pytest.mark.parametrize(
+    "template", ["/facts/{tenant}/", "/facts/{actorId}/{sessionId}/x/", "/facts/"]
+)
+def test_a_template_no_claim_can_hold_is_refused(monkeypatch, template):
+    monkeypatch.setitem(config.NAMESPACES, "facts", template)
+    with pytest.raises(ValueError, match="facts"):
+        claim_namespaces("u-1")
 
 
 def test_values_are_read(tmp_path):

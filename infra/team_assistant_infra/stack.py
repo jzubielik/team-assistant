@@ -12,11 +12,19 @@ from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_secretsmanager as secretsmanager
 from constructs import Construct
 
-from team_assistant.config import NAMESPACES, AgentConfig, load_config
+from team_assistant.config import (
+    MEMORY_TARGET,
+    NAMESPACES,
+    TOKEN_CLAIMS,
+    AgentConfig,
+    claim_templates,
+    load_config,
+)
 from team_assistant_infra.naming import (
     CDK_QUALIFIER,
     DEFAULT_ENV,
@@ -124,6 +132,7 @@ class TeamAssistantStack(cdk.Stack):
         self.memory = self._memory()
         self.guardrail = self._guardrail()
         self.github_provider = self._github(github_client_id)
+        self.memory_gateway = self._memory_gateway()
         # The gateway first: the Runtime names it as the only caller it accepts.
         self.gateway = self._gateway()
         self.runtime = self._runtime()
@@ -337,6 +346,202 @@ class TeamAssistantStack(cdk.Stack):
         cdk.CfnOutput(self, "GatewayUrl", value=gateway.attr_gateway_url)
         return gateway
 
+    def _memory_gateway(self) -> agentcore.CfnGateway:
+        """The only way the agent reaches Memory: a gateway that checks the user's token and
+        permits a call only for that user's own actor id and namespaces (docs/adr/0008). A
+        gateway of its own, because access rules refuse every call that no rule permits.
+        """
+        stack = cdk.Stack.of(self)
+        # A gateway id is <name>-<10 characters>; the pattern avoids a reference to the
+        # gateway from its own role.
+        gateway_arns = stack.format_arn(
+            service="bedrock-agentcore",
+            resource=f"gateway/{self.names.memory_gateway}-*",
+            arn_format=cdk.ArnFormat.NO_RESOURCE_NAME,
+        )
+        role = iam.Role(
+            self,
+            "MemoryGatewayRole",
+            path=ROLE_PATH,
+            description=f"Service role of the team-assistant Memory gateway, env {self.names.env}",
+            assumed_by=iam.ServicePrincipal(
+                "bedrock-agentcore.amazonaws.com",
+                conditions={
+                    "StringEquals": {"aws:SourceAccount": stack.account},
+                    "ArnLike": {"aws:SourceArn": gateway_arns},
+                },
+            ),
+        )
+        engine = agentcore.CfnPolicyEngine(
+            self,
+            "MemoryAccessRules",
+            name=self.names.policy_engine,
+            description=f"Access rules of the team-assistant Memory gateway, env {self.names.env}",
+        )
+        engine.apply_removal_policy(cdk.RemovalPolicy.DESTROY)
+        # The role serves every user: which user's memory a call may reach is decided by the
+        # access rules, before the gateway uses the role.
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="MemoryOfTheTokensUser",
+                # What the agent calls (memory.py, conversations.py, titles.py, recall.py).
+                # The session manager reads one event or deletes one only to redact a
+                # message, which this agent never does.
+                actions=[
+                    "bedrock-agentcore:CreateEvent",
+                    "bedrock-agentcore:ListEvents",
+                    "bedrock-agentcore:ListSessions",
+                    "bedrock-agentcore:ListMemoryRecords",
+                    "bedrock-agentcore:RetrieveMemoryRecords",
+                ],
+                resources=[self.memory.attr_memory_arn],
+            )
+        )
+        # What a gateway with access rules needs (AgentCore devguide, policy-permissions).
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="ReadAccessRules",
+                actions=["bedrock-agentcore:GetPolicyEngine"],
+                resources=[engine.attr_policy_engine_arn],
+            )
+        )
+        role.add_to_principal_policy(
+            iam.PolicyStatement(
+                sid="AskAccessRules",
+                actions=[
+                    "bedrock-agentcore:AuthorizeAction",
+                    "bedrock-agentcore:PartiallyAuthorizeActions",
+                ],
+                resources=[engine.attr_policy_engine_arn, gateway_arns],
+            )
+        )
+        Config = agentcore.CfnGateway
+        gateway = Config(
+            self,
+            "MemoryGateway",
+            name=self.names.memory_gateway,
+            description=f"Entry to the team-assistant Memory, env {self.names.env}",
+            role_arn=role.role_arn,
+            authorizer_type="CUSTOM_JWT",
+            authorizer_configuration=Config.AuthorizerConfigurationProperty(
+                custom_jwt_authorizer=Config.CustomJWTAuthorizerConfigurationProperty(
+                    discovery_url=self.discovery_url,
+                    allowed_clients=[self.user_pool_client.user_pool_client_id],
+                    allowed_audience=[self.names.audience],
+                )
+            ),
+            policy_engine_configuration=Config.GatewayPolicyEngineConfigurationProperty(
+                arn=engine.attr_policy_engine_arn, mode="ENFORCE"
+            ),
+        )
+        gateway.apply_removal_policy(cdk.RemovalPolicy.DESTROY)
+        # The role can read the access rules before the gateway is created.
+        gateway.node.add_dependency(role)
+        Target = agentcore.CfnGatewayTarget
+        target = Target(
+            self,
+            "MemoryGatewayTarget",
+            name=MEMORY_TARGET,
+            description=f"The team-assistant Memory, env {self.names.env}",
+            gateway_identifier=gateway.attr_gateway_identifier,
+            target_configuration=Target.TargetConfigurationProperty(
+                http=Target.HttpTargetConfigurationProperty(
+                    connector=Target.HttpConnectorTargetConfigurationProperty(
+                        source=Target.HttpConnectorSourceProperty(connector_id="agentcore-memory"),
+                        parameters={"memoryId": self.memory.attr_memory_id},
+                    )
+                )
+            ),
+            # The gateway calls Memory with its own role.
+            credential_provider_configurations=[
+                Target.CredentialProviderConfigurationProperty(
+                    credential_provider_type="GATEWAY_IAM_ROLE"
+                )
+            ],
+        )
+        target.apply_removal_policy(cdk.RemovalPolicy.DESTROY)
+        # The role's policy exists before the target is created.
+        target.node.add_dependency(role)
+        for name, statement in self._memory_rules(gateway.attr_gateway_arn).items():
+            rule = agentcore.CfnPolicy(
+                self,
+                f"MemoryRule{name.title().replace('_', '')}",
+                policy_engine_id=engine.attr_policy_engine_id,
+                # With the environment: the API asks for a name unique in the account.
+                name=f"{name}_{self.names.env.replace('-', '_')}",
+                definition=agentcore.CfnPolicy.PolicyDefinitionProperty(
+                    cedar=agentcore.CfnPolicy.CedarPolicyProperty(statement=statement)
+                ),
+            )
+            rule.apply_removal_policy(cdk.RemovalPolicy.DESTROY)
+            # A rule is checked against the operations of the gateway's target.
+            rule.node.add_dependency(target)
+        cdk.CfnOutput(self, "MemoryGatewayUrl", value=gateway.attr_gateway_url)
+        # For make deploy's step after the stack (scripts/ops.sh refresh_memory_rules).
+        cdk.CfnOutput(self, "MemoryGatewayArn", value=gateway.attr_gateway_arn)
+        cdk.CfnOutput(self, "MemoryRulesId", value=engine.attr_policy_engine_id)
+        return gateway
+
+    @staticmethod
+    def _memory_rules(gateway_arn: str) -> dict[str, str]:
+        """The access rules (Cedar), by name. An operation's name is
+        <target>___<method>:<path of the Memory API>. A call for events or sessions names an
+        actor, which must be the token's user (sub). A call for records names a namespace,
+        which must be the one the token carries in a claim (_token_claims): Cedar cannot build
+        "/facts/<sub>/" from sub.
+        """
+
+        def rule(action: str, condition: str) -> str:
+            return (
+                f"permit(principal is AgentCore::OAuthUser, action {action}, "
+                f'resource == AgentCore::Gateway::"{gateway_arn}") when {{ {condition} }};'
+            )
+
+        def operation(method: str, path: str) -> str:
+            return f'AgentCore::Action::"{MEMORY_TARGET}___{method}:/memories/{{memoryId}}{path}"'
+
+        def own(field: str, *claims: str, without: str | None = None) -> str:
+            tags = " && ".join(f'principal.hasTag("{claim}")' for claim in claims)
+            same = " || ".join(
+                f'context.input.{field} == principal.getTag("{claim}")' for claim in claims
+            )
+            if len(claims) > 1:
+                same = f"({same})"
+            # A call for records may name a namespace in two fields; only the checked one may
+            # be there.
+            only = f" && !(context.input has {without})" if without else ""
+            return f"{tags} && context has input && context.input has {field}{only} && {same}"
+
+        session = "/actor/{actorId}/sessions/{sessionId}"
+        list_events = operation("POST", session)
+        events = [
+            list_events,
+            operation("POST", "/actor/{actorId}/sessions"),  # ListSessions
+            operation("POST", "/events"),  # CreateEvent
+        ]
+        claims = TOKEN_CLAIMS
+        return {
+            "own_events": rule(f"in [{', '.join(events)}]", own("actorId", "sub")),
+            # For a new session, the session manager of bedrock-agentcore 1.26.0 also looks
+            # for an event that earlier versions stored under the actor session_<session id>,
+            # and fails when it is refused. No rule lets anyone write under such an actor.
+            "earlier_layout": rule(
+                f"== {list_events}",
+                "context has input && context.input has actorId && "
+                'context.input.actorId like "session_*"',
+            ),
+            # ListMemoryRecords: the agent lists the preferences by their exact namespace.
+            "own_preferences": rule(
+                f"== {operation('POST', '/memoryRecords')}",
+                own("namespace", claims["preferences"], without="namespacePath"),
+            ),
+            # RetrieveMemoryRecords: the memory tools search facts and summaries.
+            "own_records": rule(
+                f"== {operation('POST', '/retrieve')}",
+                own("namespacePath", claims["facts"], claims["summaries"], without="namespace"),
+            ),
+        }
+
     def _web(self) -> str:
         """The web page's hosting: a private bucket that only this distribution reads
         (origin access control), HTTPS only, fixed security headers. make deploy uploads the
@@ -444,6 +649,8 @@ class TeamAssistantStack(cdk.Stack):
             ),
             environment_variables={
                 "MEMORY_ID": self.memory.attr_memory_id,
+                # Where the agent calls Memory (memory.py).
+                "MEMORY_GATEWAY_URL": self.memory_gateway.attr_gateway_url,
                 # The credential provider the list_issues tool asks for tokens (github.py).
                 "GITHUB_PROVIDER": self.names.github_provider,
                 # The hosted page: its return page after a GitHub consent (config.return_url).
@@ -501,37 +708,8 @@ class TeamAssistantStack(cdk.Stack):
                 ],
             )
         )
-        # The calls the memory session manager makes (bedrock-agentcore 1.26.0,
-        # memory/integrations/strands/session_manager.py), on this environment's memory only;
-        # and ListSessions for the web page's conversation list (conversations.py).
-        role.add_to_principal_policy(
-            iam.PolicyStatement(
-                sid="ConversationEvents",
-                actions=[
-                    "bedrock-agentcore:CreateEvent",
-                    "bedrock-agentcore:GetEvent",
-                    "bedrock-agentcore:ListEvents",
-                    "bedrock-agentcore:DeleteEvent",
-                    "bedrock-agentcore:ListSessions",
-                ],
-                resources=[self.memory.attr_memory_arn],
-            )
-        )
-        # Long-term records (recall.py): the user's preferences are listed, facts and
-        # summaries are searched by the model's memory tools. No IAM
-        # condition on the namespace: the role is shared by every user, so it cannot tell
-        # alice from bob; that separation is the actor id from the verified token
-        # (identity.py).
-        role.add_to_principal_policy(
-            iam.PolicyStatement(
-                sid="LongTermRecords",
-                actions=[
-                    "bedrock-agentcore:RetrieveMemoryRecords",
-                    "bedrock-agentcore:ListMemoryRecords",
-                ],
-                resources=[self.memory.attr_memory_arn],
-            )
-        )
+        # No Memory action: the agent reaches Memory through the Memory gateway, with the
+        # user's token (_memory_gateway).
         # AgentCore uses this to let X-Ray deliver the agent's spans to the agent's own log
         # group (devguide, observability-configure and runtime-permissions).
         role.add_to_principal_policy(
@@ -558,7 +736,7 @@ class TeamAssistantStack(cdk.Stack):
         self._github_permissions(role)
         self._deny_user_id_access(role)
         # The Runtime construct allows the token actions on every workload identity of the
-        # account, and the boundary (one for both roles) allows the gateway's identity. The
+        # account, and the boundary (one for every role) allows the gateway's identity. The
         # agent needs a token only for its own identity, so every other identity is denied.
         # AgentCore checks these actions against two resources, the identity directory and
         # the identity itself; the Deny leaves out both for the agent's own identity.
@@ -732,6 +910,47 @@ class TeamAssistantStack(cdk.Stack):
         cdk.CfnOutput(self, "GithubCallbackUrl", value=provider.attr_callback_url)
         return provider
 
+    def _token_claims(self) -> lambda_.Function:
+        """The function Cognito calls before it issues a token, at login, refresh and the
+        gateway's token exchange: it adds the user's Memory namespaces to the access token as
+        claims. The Memory gateway compares a request's namespace with them (docs/adr/0008).
+        The code is inline: it needs no package and no asset bucket. Its role has no
+        permission, so it writes no log. An event without a user id gets no claims: the token
+        is still issued, and the gateway then refuses its calls for records.
+        """
+        source = (
+            f"CLAIMS = {claim_templates()!r}\n"
+            "\n\n"
+            "def handler(event, context):\n"
+            '    sub = (event["request"].get("userAttributes") or {}).get("sub")\n'
+            "    if not sub:\n"
+            "        return event\n"
+            '    claims = {name: path.replace("{actorId}", sub) for name, path in CLAIMS.items()}\n'
+            '    event["response"] = {\n'
+            '        "claimsAndScopeOverrideDetails": {\n'
+            '            "accessTokenGeneration": {"claimsToAddOrOverride": claims}\n'
+            "        }\n"
+            "    }\n"
+            "    return event\n"
+        )
+        role = iam.Role(
+            self,
+            "TokenClaimsRole",
+            path=ROLE_PATH,
+            description=f"Role of the team-assistant token claims function, env {self.names.env}",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+        )
+        return lambda_.Function(
+            self,
+            "TokenClaims",
+            function_name=self.names.token_claims,
+            description=f"Adds a user's Memory namespaces to the token, env {self.names.env}",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            code=lambda_.Code.from_inline(source),
+            role=role,
+        )
+
     def _users(self) -> tuple[cognito.UserPool, cognito.UserPoolClient]:
         """Who may talk to the agent: a Cognito user pool that issues the JWT (docs/adr/0002)."""
         names = self.names
@@ -748,6 +967,12 @@ class TeamAssistantStack(cdk.Stack):
             # No e-mail or phone: no messages are sent, so no SES or SNS setup and no cost.
             account_recovery=cognito.AccountRecovery.NONE,
             removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+        pool.add_trigger(
+            cognito.UserPoolOperation.PRE_TOKEN_GENERATION_CONFIG,
+            self._token_claims(),
+            # The version that changes access tokens.
+            cognito.LambdaVersion.V2_0,
         )
         domain = pool.add_domain(
             "LoginDomain",

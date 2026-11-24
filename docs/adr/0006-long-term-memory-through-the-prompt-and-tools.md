@@ -37,7 +37,7 @@ The model needs the user's long-term records in later conversations.
   answers with its result.
 - A fact is found only if the model calls the tool; the system prompt says when.
 - A message whose sixth turn still asks for a tool gets an error event instead of an answer.
-- The agent's role needs `ListMemoryRecords` (docs/security.md).
+- Listing the preferences needs `ListMemoryRecords` (docs/security.md).
 - A summary can hold text from outside, such as a GitHub issue the assistant summarised, and
   `recall_conversations` can return it in a later conversation. Both tools therefore mark
   the records they return as data, not instructions (docs/security.md, residual risks).

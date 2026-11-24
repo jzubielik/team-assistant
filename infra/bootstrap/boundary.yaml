@@ -5,7 +5,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 # TeamAssistantCdkPermissionsBoundary-<env> is the permissions boundary of every IAM role of
 # that environment: the most a role of env <env> may ever do. A boundary grants nothing by
 # itself; a role can do only what both its own policy and the boundary allow.
-# The roles are the Runtime's and the gateway's. Every Allow is what the agent or the gateway
+# The roles are the Runtime's, the two gateways' and the token claims function's (which
+# needs none of it). Every Allow is what the agent or a gateway
 # does at run time, scoped to this environment's Runtime and Memory by name (their ids are
 # <name>-<10 characters>).
 # Names: infra/team_assistant_infra/naming.py (Names.boundary_policy, Names.boundary_stack).
@@ -68,13 +69,22 @@ Resources:
               - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*
           - Sid: ConversationEvents
             Effect: Allow
-            Action: [bedrock-agentcore:CreateEvent, bedrock-agentcore:GetEvent, bedrock-agentcore:ListEvents,
-                     bedrock-agentcore:DeleteEvent, bedrock-agentcore:ListSessions]
+            Action: [bedrock-agentcore:CreateEvent, bedrock-agentcore:ListEvents,
+                     bedrock-agentcore:ListSessions]
             Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/${MemoryName}-*
           - Sid: LongTermRecords
             Effect: Allow
             Action: [bedrock-agentcore:RetrieveMemoryRecords, bedrock-agentcore:ListMemoryRecords]
             Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:memory/${MemoryName}-*
+          - Sid: MemoryAccessRules
+            # The Memory gateway reads its access rules and asks them about each request. The
+            # policy engine has the Memory's name.
+            Effect: Allow
+            Action: [bedrock-agentcore:GetPolicyEngine, bedrock-agentcore:AuthorizeAction,
+                     bedrock-agentcore:PartiallyAuthorizeActions]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:policy-engine/${MemoryName}-*
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:gateway/team-assistant-${Env}-memory-*
           - Sid: GuardToolResults
             # The guardrail's ARN holds a generated id, not its name: its tags pick it.
             Effect: Allow

@@ -23,6 +23,12 @@ or, where CDK does not validate, from the AWS API model in botocore 1.44.2:
 - Gateway team-assistant-<env>-gateway: ^([0-9a-zA-Z][-]?){1,48}$, so no two hyphens in a row
   (CloudFormation resource schema, AWS::BedrockAgentCore::Gateway, Name); 38 characters at the
   longest environment name.
+- Memory gateway team-assistant-<env>-memory: the gateway's rule; 37 characters at the longest
+  environment name.
+- Policy engine team_assistant_<env with - as _>_memory: ^[A-Za-z][A-Za-z0-9_]*$, <= 48
+  (CloudFormation resource schema, AWS::BedrockAgentCore::PolicyEngine, Name).
+- Token claims function team-assistant-<env>-token-claims: [a-zA-Z0-9-_]+, <= 64 (lambda
+  CreateFunction FunctionName).
 - Web page bucket ta-<env>-web-<login suffix>: 3..63 lowercase letters, digits and hyphens,
   unique across all of AWS (S3 bucket naming rules); the login suffix keeps it unique without
   the account id. 23 characters at the longest environment name.
@@ -37,7 +43,8 @@ CDK bootstrap of this project (docs/adr/0001), shared by every environment of an
 - Toolkit stack TeamAssistantToolkit, policies stack team-assistant-cdk-policies.
 - Managed policies TeamAssistantCdkExecution, TeamAssistantCdkExecutionRoles,
   TeamAssistantCdkExecutionGateway, TeamAssistantCdkExecutionWeb,
-  TeamAssistantCdkExecutionGuardrail (several: a managed policy
+  TeamAssistantCdkExecutionGuardrail, TeamAssistantCdkExecutionMemoryGateway
+  (several: a managed policy
   holds at most 6144 characters)
   and TeamAssistantCdkPermissionsBoundary-<env>: [\\w+=,.@-]+, <= 128 (iam CreatePolicy
   policyNameType).
@@ -64,6 +71,7 @@ EXECUTION_POLICIES = (
     "TeamAssistantCdkExecutionGateway",
     "TeamAssistantCdkExecutionWeb",
     "TeamAssistantCdkExecutionGuardrail",
+    "TeamAssistantCdkExecutionMemoryGateway",
 )
 BOUNDARY_POLICY_PREFIX = "TeamAssistantCdkPermissionsBoundary-"
 BOOTSTRAP_PARAMETER = f"/cdk-bootstrap/{CDK_QUALIFIER}/version"
@@ -86,13 +94,15 @@ def validate_env(env: str) -> str:
             f"invalid ENV '{env}': lowercase letters and digits with single inner hyphens, "
             f"starting with a letter, at most {_ENV_MAX} characters (e.g. dev, qa-2)"
         )
-    # Permissions name a gateway as team-assistant-<env>-gateway-*. The gateway of an
-    # environment "<env>-gateway-x" would match that pattern of environment "<env>".
-    if "gateway" in env.split("-"):
-        raise ValueError(
-            f"invalid ENV '{env}': no part of the name may be 'gateway' (the name would "
-            "match another environment's gateway permissions)"
-        )
+    # Permissions name the gateways as team-assistant-<env>-gateway-* and
+    # team-assistant-<env>-memory-*. A gateway of an environment "<env>-gateway-x" or
+    # "<env>-memory" would match such a pattern of environment "<env>".
+    for part in ("gateway", "memory"):
+        if part in env.split("-"):
+            raise ValueError(
+                f"invalid ENV '{env}': no part of the name may be '{part}' (the name would "
+                "match another environment's gateway permissions)"
+            )
     return env
 
 
@@ -114,6 +124,9 @@ class Names:
     exchange_secret: str
     audience: str
     gateway: str
+    memory_gateway: str
+    policy_engine: str
+    token_claims: str
     web_bucket: str
     guardrail: str
 
@@ -145,6 +158,9 @@ def names(env: str, account: str, region: str, login_suffix: str) -> Names:
         exchange_secret=f"{PROJECT}/{env}/exchange",
         audience=f"https://{PROJECT}-{env}.agent",
         gateway=f"{PROJECT}-{env}-gateway",
+        memory_gateway=f"{PROJECT}-{env}-memory",
+        policy_engine=f"team_assistant_{snake}_memory",
+        token_claims=f"{PROJECT}-{env}-token-claims",
         web_bucket=f"ta-{env}-web-{login_suffix}",
         guardrail=f"{PROJECT}-{env}-guardrail",
     )

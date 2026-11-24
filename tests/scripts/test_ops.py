@@ -25,6 +25,11 @@ STOCK = ROOT / "infra/node_modules/aws-cdk/lib/api/bootstrap/bootstrap-template.
 
 AWS_STUB = """#!/usr/bin/env bash
 echo "aws $*" >> "$STUB_LOG"
+# STUB_FAIL: a command that is refused, with the account id in the message.
+if [ -n "${STUB_FAIL:-}" ] && [[ "$*" == *"$STUB_FAIL"* ]]; then
+  echo "An error occurred (AccessDeniedException): arn:aws:iam::$STUB_ACCOUNT:user/x" >&2
+  exit 254
+fi
 case "$*" in
 *"sts get-caller-identity"*) printf '%s\\t%s\\n' "$STUB_ACCOUNT" "$STUB_ARN" ;;
 *"ssm get-parameter"*) echo "30" ;;
@@ -36,6 +41,21 @@ case "$*" in
 *"OutputKey=='RuntimeArn'"*)
   echo "arn:aws:bedrock-agentcore:eu-west-1:$STUB_ACCOUNT:runtime/$STUB_RUNTIME" ;;
 *"OutputKey=='GatewayUrl'"*) echo "https://gw-1.gateway.example" ;;
+*"OutputKey=='MemoryRulesId'"*) echo "team_assistant_dev_memory-0a1b2c3d4e" ;;
+*"OutputKey=='MemoryGatewayArn'"*)
+  echo "arn:aws:bedrock-agentcore:eu-west-1:$STUB_ACCOUNT:gateway/ta-dev-memory-0a1b2c3d4e" ;;
+*"list-policies"*) echo "${STUB_LEFT_RULES:-}" ;;
+*"create-policy"*) echo "rule-$(grep -c create-policy "$STUB_LOG")" ;;
+*"get-policy"*)
+  # A deleted rule is gone at once.
+  id=$(sed -n 's/.*--policy-id \\([^ ]*\\).*/\\1/p' <<<"$*")
+  if grep -q "delete-policy.*--policy-id $id" "$STUB_LOG"; then
+    echo "An error occurred (ResourceNotFoundException) when calling the GetPolicy operation" >&2
+    exit 254
+  fi
+  # STUB_RULE_SLOW: the first answer about a new rule is CREATING.
+  if [ -n "${STUB_RULE_SLOW:-}" ] && [ "$(grep -c "get-policy.*--policy-id $id" "$STUB_LOG")" = 1 ]
+  then echo CREATING; else echo "${STUB_RULE_STATUS:-ACTIVE}"; fi ;;
 *"OutputKey=='LoginDomain'"*) echo "https://ta-dev-0a1b2c3d.auth.example" ;;
 *"OutputKey=='UserPoolClientId'"*) echo "client-1" ;;
 *"OutputKey=='Audience'"*) echo "https://team-assistant-dev.agent" ;;
@@ -153,6 +173,81 @@ def test_deploy_sets_the_github_return_url_on_the_runtimes_workload_identity(stu
         " http://localhost:5173/callback.html https://d111.cloudfront.example/callback.html"
     ) in update
     assert calls.index("cdk deploy") < calls.index("update-workload-identity")
+
+
+def test_deploy_creates_and_deletes_a_rule_for_the_history_and_for_the_list(stubs):
+    result, calls = ops(stubs, "deploy")
+    assert result.returncode == 0, result.stderr
+    lines = calls.splitlines()
+    created = [c for c in lines if "create-policy" in c]
+    assert [c.split("--name ")[1].split()[0] for c in created] == [
+        "refresh_events_dev",
+        "refresh_sessions_dev",
+    ]
+    actor = "memory___POST:/memories/{memoryId}/actor/{actorId}/sessions"
+    assert f'Action::\\"{actor}/{{sessionId}}\\"' in created[0]
+    assert f'Action::\\"{actor}\\"' in created[1]
+    for line in created:
+        # No user's token has this id, so the rule permits nothing.
+        assert 'principal.getTag(\\"sub\\") == \\"nobody\\"' in line
+        assert "--policy-engine-id team_assistant_dev_memory-0a1b2c3d4e" in line
+        assert 'Gateway::\\"arn:aws:bedrock-agentcore:eu-west-1:' in line
+        assert 'nextToken == \\"never\\"' in line
+    # Each rule is deleted before the next one is created: the delete is what counts.
+    steps = [w for c in lines for w in c.split() if w in ("create-policy", "delete-policy")]
+    assert steps == ["create-policy", "delete-policy", "create-policy", "delete-policy"]
+    assert "--policy-id rule-1" in next(c for c in lines if "delete-policy" in c)
+    assert calls.index("cdk deploy") < calls.index("create-policy")
+
+
+def test_deploy_first_deletes_a_rule_that_a_stopped_run_left(stubs):
+    result, calls = ops(stubs, "deploy", extra={"STUB_LEFT_RULES": "left-1"})
+    assert result.returncode == 0, result.stderr
+    assert calls.index("delete-policy --policy-engine-id team_assistant_dev_memory-0a1b2c3d4e "
+                       "--policy-id left-1") < calls.index("create-policy")  # fmt: skip
+
+
+def test_deploy_looks_for_a_left_rule_by_its_name_only(stubs):
+    _, calls = ops(stubs, "deploy")
+    listed = [c for c in calls.splitlines() if "list-policies" in c]
+    assert [c.split("--query ")[1].split()[0] for c in listed] == [
+        "policies[?name=='refresh_events_dev'].policyId",
+        "policies[?name=='refresh_sessions_dev'].policyId",
+    ]
+
+
+def test_deploy_waits_while_a_rule_is_being_created(stubs):
+    result, calls = ops(stubs, "deploy", extra={"STUB_RULE_SLOW": "1"})
+    assert result.returncode == 0, result.stderr
+    lines = calls.splitlines()
+    first = next(i for i, c in enumerate(lines) if "delete-policy" in c)
+    # Asked twice (CREATING, then ACTIVE) before the delete.
+    assert sum("get-policy" in c and "rule-1" in c for c in lines[:first]) == 2
+
+
+@pytest.mark.parametrize("command", ["list-policies", "create-policy", "delete-policy"])
+def test_deploy_stops_with_advice_when_an_access_rule_call_is_refused(stubs, command):
+    result, calls = ops(stubs, "deploy", extra={"STUB_FAIL": command})
+    assert result.returncode != 0
+    assert "run make deploy ENV=dev again" in result.stderr
+    assert EXPECTED not in result.stderr
+    assert "update-workload-identity" not in calls
+
+
+def test_deploy_deletes_the_rule_when_its_state_cannot_be_read(stubs):
+    result, calls = ops(stubs, "deploy", extra={"STUB_FAIL": "get-policy"})
+    assert result.returncode != 0
+    assert "run make deploy ENV=dev again" in result.stderr
+    assert calls.index("create-policy") < calls.index("delete-policy --policy-engine-id")
+
+
+def test_deploy_stops_when_a_rule_does_not_come_into_force(stubs):
+    result, calls = ops(stubs, "deploy", extra={"STUB_RULE_STATUS": "CREATE_FAILED"})
+    assert result.returncode != 0
+    assert "did not come into force (CREATE_FAILED)" in result.stderr
+    # The failed rule is not left behind; the other rule and the later steps do not run.
+    assert calls.count("create-policy") == calls.count("delete-policy") == 1
+    assert "update-workload-identity" not in calls
 
 
 def test_deploy_without_the_github_client_id_stops_before_any_change(stubs):
@@ -281,7 +376,8 @@ def test_bootstrap_uses_the_aws_managed_key_and_the_project_policy(stubs):
     assert ":policy/TeamAssistantCdkExecutionRoles," in cdk
     assert ":policy/TeamAssistantCdkExecutionGateway," in cdk
     assert ":policy/TeamAssistantCdkExecutionWeb," in cdk
-    assert ":policy/TeamAssistantCdkExecutionGuardrail " in cdk
+    assert ":policy/TeamAssistantCdkExecutionGuardrail," in cdk
+    assert ":policy/TeamAssistantCdkExecutionMemoryGateway " in cdk
     assert "AdministratorAccess" not in calls
     # The terminal output names the trusted roles without the account id.
     assert EXPECTED not in result.stdout
@@ -378,6 +474,36 @@ def test_destroy_empties_the_page_bucket_before_the_stack(stubs):
     removal = "s3 rm s3://ta-dev-web-0a1b2c3d --recursive"
     empty = next(i for i, c in enumerate(lines) if removal in c)
     assert empty < next(i for i, c in enumerate(lines) if "cdk destroy" in c)
+
+
+def test_destroy_deletes_a_rule_that_a_stopped_deploy_left_before_the_stack(stubs):
+    result, calls = ops(
+        stubs, "destroy", stdin="TeamAssistant-dev\n", extra={"STUB_LEFT_RULES": "left-1"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls.index("delete-policy") < calls.index("cdk destroy")
+    assert "--policy-id left-1" in calls
+
+
+def test_destroy_goes_on_when_a_left_rule_cannot_be_deleted(stubs):
+    extra = {"STUB_LEFT_RULES": "left-1", "STUB_FAIL": "delete-policy"}
+    result, calls = ops(stubs, "destroy", stdin="TeamAssistant-dev\n", extra=extra)
+    assert result.returncode == 0, result.stderr
+    assert "warning: the stack delete may fail" in result.stdout
+    assert "cdk destroy" in calls
+
+
+def test_destroy_goes_on_when_the_access_rules_cannot_be_listed(stubs):
+    extra = {"STUB_FAIL": "list-policies"}
+    result, calls = ops(stubs, "destroy", stdin="TeamAssistant-dev\n", extra=extra)
+    assert result.returncode == 0, result.stderr
+    assert "cdk destroy" in calls
+
+
+def test_destroy_without_a_left_rule_deletes_no_rule(stubs):
+    result, calls = ops(stubs, "destroy", stdin="TeamAssistant-dev\n")
+    assert result.returncode == 0, result.stderr
+    assert "delete-policy" not in calls
 
 
 def test_unbootstrap_refuses_while_an_environment_is_deployed(stubs):

@@ -5,7 +5,8 @@ A request is one user message, ``{"prompt": ...}``, or the forwarding of a GitHu
 
 1. check the message (a non-empty ``prompt``);
 2. find out who is asking (identity.py: the ``sub`` claim of the verified token);
-3. open that user's conversation history for this session (memory.py);
+3. open that user's conversation history for this session (memory.py), through the Memory
+   gateway with the user's token, as every other call to Memory;
 4. list the user's stored preferences for the system prompt (recall.py, prompts.py);
 5. run the model with the history, the GitHub tools list_issues and get_issue (github.py) and
    the memory tools search_memory and recall_conversations (recall.py), streaming the answer.
@@ -51,7 +52,7 @@ from team_assistant.github import github_tools
 from team_assistant.guard import guard_hook
 from team_assistant.identity import IdentityError, actor_from_headers, bearer_from_headers
 from team_assistant.logs import configure_stdout
-from team_assistant.memory import session_manager
+from team_assistant.memory import gateway_client, session_manager
 from team_assistant.prompts import system_prompt
 from team_assistant.recall import list_preferences, memory_tools
 from team_assistant.titles import make_title, store_title
@@ -236,10 +237,9 @@ async def _consent(
     yield events.consent_done()
 
 
-def _memory_client(region: str) -> Any:
-    import boto3  # the agent's own role calls Memory
-
-    return boto3.client("bedrock-agentcore", region_name=region)
+def _memory_client(gateway_url: str, region: str, token: str) -> Any:
+    """The request's Memory client: every call goes to the Memory gateway as the user."""
+    return gateway_client(gateway_url, region, token)
 
 
 def _guard_client(region: str) -> Any:
@@ -249,7 +249,7 @@ def _guard_client(region: str) -> Any:
 
 
 async def _read_memory(
-    payload: dict, context: Any, make_client: Callable[[str], Any]
+    payload: dict, context: Any, make_client: Callable[[str, str, str], Any]
 ) -> AsyncIterator[dict]:
     """The web page's requests: the user's conversations, or the history of the request's
     session. The actor is the token's, whatever the body says; no model call."""
@@ -257,13 +257,16 @@ async def _read_memory(
     kind = "conversations" if "conversations" in payload else "history"
     try:
         actor = actor_from_headers(context.request_headers)
+        token = bearer_from_headers(context.request_headers)
     except IdentityError as error:
         _log("rejected", None, None, usage, reason="identity")
         yield events.error(f"cannot tell who is asking: {error}")
         return
     memory_id, region = os.environ.get("MEMORY_ID"), os.environ.get("AWS_REGION")
+    gateway_url = os.environ.get("MEMORY_GATEWAY_URL")
     session_id = context.session_id
-    if not memory_id or not region or (kind == "history" and not session_id):
+    configured = memory_id and region and gateway_url
+    if not configured or (kind == "history" and not session_id):
         _log("rejected", actor, session_id, usage, reason="session id or agent settings")
         yield events.error("the request has no session id, or the agent is not configured")
         return
@@ -271,7 +274,7 @@ async def _read_memory(
         _log("rejected", actor, session_id, usage, reason="session of another user")
         yield events.error(OTHER_USERS_SESSION)
         return
-    client = make_client(region)
+    client = make_client(gateway_url, region, token)
     try:
         if kind == "conversations":
             items = await asyncio.to_thread(list_conversations, client, memory_id, actor)
@@ -297,7 +300,7 @@ async def respond(
     make_session_manager: Callable[..., Any] | None = None,
     make_tools: Callable[[Callable[[str], None], str], list] | None = None,
     complete: Callable[..., None] = complete_consent,
-    make_memory_client: Callable[[str], Any] | None = None,
+    make_memory_client: Callable[[str, str, str], Any] | None = None,
     store_title: Callable[..., None] | None = None,
     recall: Callable[..., tuple[list[str], list]] | None = None,
     make_guard_client: Callable[[str], Any] | None = None,
@@ -319,13 +322,15 @@ async def respond(
         return
     try:
         actor = actor_from_headers(context.request_headers)
+        token = bearer_from_headers(context.request_headers)
     except IdentityError as error:
         _log("rejected", None, None, usage, reason="identity")
         yield events.error(f"cannot tell who is asking: {error}")
         return
     session_id = context.session_id
     memory_id, region = os.environ.get("MEMORY_ID"), os.environ.get("AWS_REGION")
-    if not session_id or not memory_id or not region:
+    gateway_url = os.environ.get("MEMORY_GATEWAY_URL")
+    if not session_id or not memory_id or not region or not gateway_url:
         _log("rejected", actor, session_id, usage, reason="session id or agent settings")
         yield events.error("the request has no session id, or the agent is not configured")
         return
@@ -357,8 +362,8 @@ async def respond(
             loop.call_soon_threadsafe(queue.put_nowait, ("auth_url", url))
 
         tools = (make_tools or partial(github_tools, return_url=return_to))(on_auth_url, state)
-        # One Memory client for the preferences, the memory tools and the title.
-        client = (make_memory_client or _memory_client)(region)
+        # One Memory client for the history, the preferences, the memory tools and the title.
+        client = (make_memory_client or _memory_client)(gateway_url, region, token)
         preferences, memory = await asyncio.to_thread(
             recall or _default_recall, client, memory_id, actor, session_id, config
         )
@@ -368,7 +373,7 @@ async def respond(
         )
         called: set[str] = set()
         stopped = False
-        with open_session(memory_id, actor, session_id, region) as session_mgr:
+        with open_session(memory_id, actor, session_id, region, client) as session_mgr:
             agent = build_agent(
                 config, session_mgr, actor, session_id, model, tools, preferences, guard
             )

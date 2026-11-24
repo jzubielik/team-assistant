@@ -18,6 +18,8 @@ flowchart TB
         model["Bedrock model"]
         idn["AgentCore Identity<br/>GitHub provider, token vault"]
         guard["Bedrock guardrail<br/>prompt-attack filter"]
+        claims["Lambda function<br/>adds the user's Memory namespaces to the token"]
+        mgw["AgentCore Gateway for Memory<br/>checks the token and the access rules"]
     end
     github["GitHub API"]
 
@@ -28,7 +30,8 @@ flowchart TB
     cli -->|"POST /agent/invocations<br/>Bearer access token"| gw
     gw -->|token exchange| cognito
     gw --> rt --> agent
-    agent --> mem
+    cognito --> claims
+    agent -->|"Bearer access token"| mgw --> mem
     agent --> model
     agent -->|user's GitHub token| idn
     agent -->|GitHub tool results| guard
@@ -40,7 +43,7 @@ The agent's modules:
 | Module | Role |
 |---|---|
 | `identity.py` | user id = the `sub` claim of the token |
-| `memory.py` | history of (user id, session id) |
+| `memory.py` | history of (user id, session id); the Memory client that calls the Memory gateway with the user's token |
 | `recall.py` | the user's preferences for the system prompt; tools `search_memory`, `recall_conversations` |
 | `prompts.py` | the system prompt: fixed instructions, then the user's preferences |
 | `app.py` | model call, streamed answer |
@@ -72,6 +75,9 @@ long-term records into `/preferences/{actorId}/`, `/facts/{actorId}/` and
 4. `app.py` checks the prompt, reads the user id from the token (`identity.py`), refuses a
    session id that another user used first in this container, and opens the history for
    (user id, session id) in AgentCore Memory (`memory.py`).
+   Every call to Memory, here and in the next steps, goes to the Memory gateway with the
+   request's token; the gateway passes it on only for that user's actor id and namespaces
+   (docs/adr/0008).
 5. `recall.py` lists the user's newest preference records (`ListMemoryRecords`, at most
    `max_preferences` from `config/agent.toml`); they go into the system prompt after the fixed
    instructions, so the start of a user's requests stays the same from turn to turn. Facts and
@@ -144,7 +150,7 @@ The return URL is registered on the Runtime's workload identity by `make deploy`
 |---|---|---|
 | `team-assistant-cdk-policies`, `TeamAssistantToolkit` | the CDK bootstrap of this project: deploy permissions, assets bucket, image repository | once per account and region |
 | `team-assistant-<env>-boundary` | the permissions boundary of the environment's roles | with the environment |
-| `TeamAssistant-<env>` | user pool, app client, login domain and style, resource server (the audience), Memory, the guardrail, Runtime, the agent's role, the gateway with its target and role, the token exchange provider and its placeholder secret, GitHub credential provider and its client secret; the page's bucket, CloudFront distribution, origin access control and response headers policy | with the environment |
+| `TeamAssistant-<env>` | user pool, app client, login domain and style, resource server (the audience), Memory, the guardrail, Runtime, the agent's role, the gateway with its target and role, the token exchange provider and its placeholder secret, the Memory gateway with its target, role and access rules, the function that adds the Memory namespaces to a token, GitHub credential provider and its client secret; the page's bucket, CloudFront distribution, origin access control and response headers policy | with the environment |
 | (none) | the GitHub OAuth App, created by hand in GitHub; the token vault, one per account and region, created by AgentCore | outlast the environment |
 
 ## Not built

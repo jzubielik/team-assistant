@@ -10,6 +10,8 @@
   asked to. The environment's guardrail stops a prompt attack and lets plain text through.
 - Gateway: every request goes through the gateway, and the same token sent straight to the
   Runtime is refused.
+- Memory gateway: with a user's token it gives that user's sessions, preferences and facts
+  and refuses another user's.
 - Web page: the page's requests list the user's conversations with a
 title and return a conversation's history, and another user's history of the same session id
 holds none of it; the hosted page is served over HTTPS with its security headers and the
@@ -18,7 +20,7 @@ bucket refuses a direct request.
     python scripts/smoke.py --profile <p> --region <r> --gateway-url <url> \
         --gateway-target <name> --runtime-arn <arn> --memory-id <id> --login-domain <url> \
         --client-id <id> --env <env> --web-url <url> --web-bucket <name> --guardrail-id <id> \
-        [--user-a alice] [--user-b bob]
+        --memory-gateway-url <url> [--user-a alice] [--user-b bob]
 
 Both users must be logged in (make login). Prints one line per check, PASS or FAIL, and exits
 1 when any check failed. Each run costs a handful of model calls. Long-term records are
@@ -43,7 +45,7 @@ import auth  # noqa: E402
 import chat  # noqa: E402
 import memory  # noqa: E402
 
-from team_assistant.config import NAMESPACES  # noqa: E402
+from team_assistant.config import MEMORY_TARGET, NAMESPACES  # noqa: E402
 
 Ask = Callable[[str, str, str], str]  # (user, session id, prompt) -> answer text
 # (user, session id, body) -> the first event of the answer to a request that is not a prompt
@@ -53,6 +55,10 @@ Fetch = Callable[[str], tuple[int, dict[str, str], str]]
 Check = tuple[bool, str]
 # (user, strategy name from NAMESPACES) -> texts of that user's long-term records
 RecordsOf = Callable[[str, str], list[str]]
+# (the user whose token is sent, the user whose memory is asked for, one of
+# MEMORY_READS or MEMORY_INTRUSIONS)
+# -> the HTTP status of the Memory gateway's answer
+Reach = Callable[[str, str, str], int]
 # Waits for a non-empty list from the function and returns its first item, or None.
 Wait = Callable[[Callable[[], list]], object]
 # How much of an unexpected answer a FAIL message shows.
@@ -62,6 +68,17 @@ MARKER = "smk"
 MARKED_WORD = re.compile(rf"\b{MARKER}[a-z]{{5}}\b", re.IGNORECASE)
 # How long to wait for a long-term record, and how often to look.
 WAIT_S, INTERVAL_S = 300, 10
+# What the "memory gateway" check asks for: reads of a user's memory, and calls that must
+# fail for another user's: the events of a session, an event stored under that user, that
+# user's facts named in one field with the caller's in the other, and that user's sessions
+# named in the address with the caller's id in the body.
+MEMORY_READS = ("sessions", "preferences", "facts")
+MEMORY_INTRUSIONS = (
+    "events",
+    "a new event",
+    "facts beside the caller's own",
+    "sessions with the caller's id in the body",
+)
 SIGNATURE_QUESTION = (
     "Which word should you sign your answers with? Reply with the word only. If none, say NONE."
 )
@@ -170,6 +187,25 @@ def check_direct_call(call: Callable[[], object]) -> Check:
             return False, f"refused, but not as unauthorised ({error})"
         return True, "the Runtime refuses a valid token that did not come through the gateway"
     return False, "the Runtime answered a direct call: the gateway is not the only way in"
+
+
+def check_memory_gateway(reach: Reach, user_a: str, user_b: str) -> Check:
+    """The Memory gateway answers the first user's token for their own memory and refuses it
+    for the other user's (HTTP 403)."""
+    cases = [(user_a, what, 200) for what in MEMORY_READS]
+    cases += [(user_b, what, 403) for what in (*MEMORY_READS, *MEMORY_INTRUSIONS)]
+    for owner, what, expected in cases:
+        status = reach(user_a, owner, what)
+        if status != expected:
+            return False, (
+                f"{user_a}'s token asking for {owner}'s {what} got HTTP {status}, "
+                f"expected {expected}"
+            )
+    return True, (
+        f"with {user_a}'s token the Memory gateway gives {user_a}'s sessions, preferences and "
+        f"facts and refuses {user_b}'s, also a new event for {user_b} and {user_b}'s id in "
+        "the address beside the caller's in the body"
+    )
 
 
 def check_other_user(
@@ -437,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--web-url", required=True)
     parser.add_argument("--web-bucket", required=True)
     parser.add_argument("--guardrail-id", required=True)
+    parser.add_argument("--memory-gateway-url", required=True)
     parser.add_argument("--user-a", default="alice")
     parser.add_argument("--user-b", default="bob")
     args = parser.parse_args(argv)
@@ -519,6 +556,75 @@ def main(argv: list[str] | None = None) -> int:
         found = memory.list_records(client, args.memory_id, namespace)
         return [r.get("content", {}).get("text", "") for r in found]
 
+    def reach(user: str, owner: str, what: str) -> int:
+        from botocore.exceptions import ClientError
+
+        from team_assistant.memory import gateway_client
+
+        gateway = gateway_client(args.memory_gateway_url, args.region, token(user))
+        actor = auth._claims(token(owner))["sub"]
+        if what == "sessions with the caller's id in the body":
+            # Not a request boto3 can make: sent as it is.
+            import json
+            import urllib.error
+            import urllib.parse
+            import urllib.request
+
+            host = urllib.parse.urlsplit(args.memory_gateway_url).netloc
+            request = urllib.request.Request(  # noqa: S310 - https
+                f"https://{host}/{MEMORY_TARGET}/memories/{args.memory_id}/actor/{actor}/sessions",
+                data=json.dumps({"actorId": auth._claims(token(user))["sub"]}).encode(),
+                headers={
+                    "Authorization": f"Bearer {token(user)}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                    return response.status
+            except urllib.error.HTTPError as error:
+                return error.code
+        try:
+            if what == "events":
+                gateway.list_events(
+                    memoryId=args.memory_id, actorId=actor, sessionId=new_session_id()
+                )
+            elif what == "sessions":
+                gateway.list_sessions(memoryId=args.memory_id, actorId=actor)
+            elif what == "preferences":
+                gateway.list_memory_records(
+                    memoryId=args.memory_id,
+                    namespace=memory.namespace_of(NAMESPACES["preferences"], actor, ""),
+                    maxResults=1,
+                )
+            elif what == "a new event":
+                import datetime
+
+                gateway.create_event(
+                    memoryId=args.memory_id,
+                    actorId=actor,
+                    sessionId=new_session_id(),
+                    eventTimestamp=datetime.datetime.now(datetime.UTC),
+                    payload=[{"blob": MARKER}],
+                )
+            else:
+                where = {"namespacePath": memory.namespace_of(NAMESPACES["facts"], actor, "")}
+                if what == "facts beside the caller's own":
+                    own = auth._claims(token(user))["sub"]
+                    where = {
+                        "namespacePath": memory.namespace_of(NAMESPACES["facts"], own, ""),
+                        "namespace": where["namespacePath"],
+                    }
+                gateway.retrieve_memory_records(
+                    memoryId=args.memory_id,
+                    searchCriteria={"searchQuery": MARKER, "topK": 1},
+                    **where,
+                )
+        except ClientError as error:
+            return error.response["ResponseMetadata"]["HTTPStatusCode"]
+        return 200
+
     a, b = args.user_a, args.user_b
     actors = [auth._claims(token(user))["sub"] for user in (a, b)]
     print(f"purge: {purge(client, args.memory_id, actors)} record(s) of earlier runs deleted")
@@ -563,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             ("github tool", lambda: check_github_tool(ask_events, a, b)),
             ("guardrail", lambda: check_guardrail(apply_guardrail)),
+            ("memory gateway", lambda: check_memory_gateway(reach, a, b)),
             (
                 "page served",
                 lambda: check_page_served(fetch, args.web_url, bucket_url, args.gateway_url),

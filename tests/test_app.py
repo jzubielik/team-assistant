@@ -217,7 +217,63 @@ def test_missing_session_id_or_settings_yields_error(context, managers, agent_en
     context.session_id = "session-" + "1" * 30
     monkeypatch.delenv("MEMORY_ID")
     assert [e["type"] for e in run({"prompt": "hi"}, context, managers)[0]] == ["error"]
+    monkeypatch.setenv("MEMORY_ID", "mem-1")
+    monkeypatch.delenv("MEMORY_GATEWAY_URL")
+    assert [e["type"] for e in run({"prompt": "hi"}, context, managers)[0]] == ["error"]
     assert managers.built == []
+
+
+def test_every_memory_call_of_a_request_uses_one_client_made_for_the_users_token(
+    context, managers, agent_env
+):
+    made = []
+
+    def make_client(gateway_url, region, token):
+        made.append((gateway_url, region, token))
+        return "the client"
+
+    asked = []
+
+    def recall(client, *args):
+        asked.append(client)
+        return [], []
+
+    stream = app.respond(
+        {"prompt": "hi"},
+        context,
+        config=CONFIG,
+        model=FakeModel(),
+        make_session_manager=managers,
+        make_tools=lambda on_auth_url, state: [],
+        make_memory_client=make_client,
+        recall=recall,
+    )
+    assert collect_events(stream)[-1]["type"] == "done"
+    token = context.request_headers["Authorization"].removeprefix("Bearer ")
+    assert made == [("https://gw-1.gateway.example", "eu-west-1", token)]
+    assert asked == ["the client"] and managers.built[0].client == "the client"
+
+
+def test_the_pages_reads_use_a_client_made_for_the_users_token(context, managers, agent_env):
+    made = []
+
+    class Reader:
+        def list_sessions(self, **kwargs):
+            return {"sessionSummaries": []}
+
+    def make_client(*args):
+        made.append(args)
+        return Reader()
+
+    stream = app.respond(
+        {"conversations": {}},
+        context,
+        make_session_manager=managers,
+        make_memory_client=make_client,
+    )
+    assert [e["type"] for e in collect_events(stream)] == ["conversations"]
+    token = context.request_headers["Authorization"].removeprefix("Bearer ")
+    assert made == [("https://gw-1.gateway.example", "eu-west-1", token)]
 
 
 def test_session_manager_is_closed_when_the_model_raises(context, managers, agent_env):
@@ -421,7 +477,7 @@ class MemoryReader:
 
 def read_run(payload, context, managers, reader):
     stream = app.respond(
-        payload, context, make_session_manager=managers, make_memory_client=lambda region: reader
+        payload, context, make_session_manager=managers, make_memory_client=lambda *args: reader
     )
     return collect_events(stream)
 

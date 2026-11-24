@@ -59,6 +59,35 @@ NAMESPACES = {
     "summaries": "/summaries/{actorId}/{sessionId}/",
 }
 
+# The gateway target that fronts Memory: a part of the address the agent calls
+# (<gateway>/<target>/memories/...) and of the names the access rules use.
+MEMORY_TARGET = "memory"
+# The access-token claim that holds a user's namespace of each strategy. The Memory gateway
+# compares a request's namespace with these claims (docs/adr/0008).
+TOKEN_CLAIMS = {
+    "preferences": "memory_preferences",
+    "facts": "memory_facts",
+    "summaries": "memory_summaries",
+}
+
+
+def claim_templates() -> dict[str, str]:
+    """Each claim of TOKEN_CLAIMS with its namespace template; for summaries the part every
+    session shares. ValueError for a template without {actorId} or with more."""
+    templates = {}
+    for strategy, claim in TOKEN_CLAIMS.items():
+        prefix, _, rest = NAMESPACES[strategy].partition("{sessionId}")
+        only_actor = "{actorId}" in prefix and "{" not in prefix.replace("{actorId}", "")
+        if not only_actor or rest not in ("", "/"):
+            raise ValueError(f"the {strategy} namespace must hold {{actorId}} and no more")
+        templates[claim] = prefix
+    return templates
+
+
+def claim_namespaces(actor: str) -> dict[str, str]:
+    """Each claim of TOKEN_CLAIMS with this actor's namespace."""
+    return {claim: path.replace("{actorId}", actor) for claim, path in claim_templates().items()}
+
 
 @dataclass(frozen=True)
 class AgentConfig:

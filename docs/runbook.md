@@ -67,8 +67,10 @@ make status ENV=dev
 image repository. When the deploy changes IAM, CDK shows the changes and asks before it goes on.
 
 `make deploy` creates the stack `team-assistant-<env>-boundary` (the permissions boundary of
-the environment's roles) and then `TeamAssistant-<env>`, and registers the GitHub return URL on
-the agent's workload identity. Every command first checks that the profile points at the
+the environment's roles) and then `TeamAssistant-<env>`, creates and deletes two access rules
+of the Memory gateway (without that step the gateway refuses every user their own history and
+conversation list: docs/adr/0008), and registers the GitHub return URL on the agent's workload
+identity. Every command first checks that the profile points at the
 account set as `ACCOUNT_<env>` and stops otherwise; `deploy` and `diff` also stop without
 `GITHUB_CLIENT_ID_<env>`.
 
@@ -102,7 +104,7 @@ the last one is closed, so an open one may still hold the first user's login.
 Check the environment and look into Memory:
 
 ```
-make smoke ENV=dev                               # sixteen PASS lines; alice and bob logged in, alice consented to GitHub
+make smoke ENV=dev                               # seventeen PASS lines; alice and bob logged in, alice consented to GitHub
 make memory ENV=dev USER=alice SESSION=<id>      # messages and long-term records of a user
 make seed ENV=dev USER=carol                     # scripted conversations into carol's memory; records in measurements/<date>-<env>-carol-seed.json
 make eval ENV=dev USER=carol LABEL=first         # asks carol's memory the cases of scripts/evals.toml; result in measurements/ (gitignored)
@@ -176,8 +178,8 @@ make web-sync ENV=dev    # build and upload the page only, no stack update
 Before the first deploy after an update of this repository that changed
 `infra/bootstrap/execution-policies.yaml`, run `make bootstrap ENV=dev`.
 
-`make deploy ENV=dev` creates a new user pool, Memory, guardrail, Runtime, gateway and GitHub
-provider. Users,
+`make deploy ENV=dev` creates a new user pool, Memory, guardrail, Runtime, both gateways and
+GitHub provider. Users,
 conversations and GitHub consents of the earlier deployment are gone, and saved logins no
 longer fit: `make github`, set the new Redirect URI in the OAuth App, create the users again
 (`make user`), log in again (`make login`) and let alice consent again. `make chat` says so
@@ -191,7 +193,8 @@ make status ENV=dev
 ```
 
 `make destroy` asks you to type the stack name, then deletes both secrets of the environment
-at once (no recovery window), empties the page's bucket, deletes `TeamAssistant-<env>`, every
+at once (no recovery window), empties the page's bucket, deletes an access rule that a stopped
+`make deploy` left, deletes `TeamAssistant-<env>`, every
 agent image in the bootstrap's image repository, the Runtime's log groups and
 `team-assistant-<env>-boundary`. Expected afterwards: both stacks "does not exist". Users and
 conversations are deleted with the stack. The agent images are kept while another environment
@@ -239,6 +242,14 @@ bootstraps of the account (`CDKToolkit`, other projects' qualifiers) are not tou
   `make memory ... USER=<name> SESSION=<id>` shows whether the records exist. A fact or an
   earlier conversation reaches the answer only when the model calls `search_memory` or
   `recall_conversations`; `make eval` writes down every tool call.
+- **Every message ends with "the agent could not answer" and the Runtime's log has
+  `Failed to list events`**: the Memory gateway gives its access rules no actor id for the
+  history and the conversation list (docs/adr/0008). `make deploy` prevents this with its
+  step after the stack; the step was stopped half way, or someone created an access rule for
+  one of the two operations by hand. Run `make deploy ENV=<env>`.
+- **The `memory gateway` smoke check FAILs with HTTP 403 for the user's own preferences or
+  facts**: the saved login's token lacks the Memory namespaces. Run `make login` for that
+  user again.
 - **`GITHUB_CLIENT_ID_<env> is not set`**: add the OAuth App's client id to `local.mk`.
 - **`WARNING ExplicitAuthFlows.1: 'ALLOW_TOKEN_EXCHANGE_IMPERSONATION' is not one of [...]`**
   at synth or deploy: CDK's validation predates Cognito's token exchange; the service accepts the

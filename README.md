@@ -20,6 +20,8 @@ https://github.com/user-attachments/assets/41862dc0-2811-4d38-b5fb-035fe27bb614
   Cognito token (`sub`), never from the request. Conversation history, long-term memory and the
   GitHub token are all keyed by it; two users never see each other's data, and a session id
   in use by one user is refused to another.
+  The agent reaches Memory only through a second gateway, which passes a call on only for
+  the token's user.
 - **One way in.** An AgentCore Gateway checks the token, exchanges it for one bound to the agent
   (OAuth token exchange, RFC 8693) and relays the request. The AgentCore Runtime accepts only
   requests that came through this gateway; the same valid token sent straight to the Runtime is
@@ -50,7 +52,7 @@ flowchart LR
     B -. sign-in .-> P[Cognito<br/>user pool]
     C -. sign-in .-> P
     G[AgentCore Gateway<br/>checks and exchanges<br/>the token] --> R[AgentCore Runtime<br/>Strands agent]
-    R --> M[AgentCore Memory<br/>history and<br/>long-term records]
+    R --> MG[AgentCore Gateway<br/>for Memory: checks<br/>the token's user] --> M[AgentCore Memory<br/>history and<br/>long-term records]
     R --> L[Bedrock model]
     R --> I[AgentCore Identity<br/>token vault] --> H[GitHub API]
 ```
@@ -75,7 +77,8 @@ The request path, the GitHub consent and the web page step by step:
 
 - No alarms and no log retention; traces are built but off by default
   ([docs/security.md](docs/security.md), "Traces").
-- Separation between users rests on the agent's code: one IAM role serves all users.
+- A signed-in user can read and change their own stored conversations at the Memory gateway,
+  without the agent.
 - The GitHub tools only read public repositories.
 - Not tested under load; answers from long-term memory are checked only on scripted
   conversations (`make seed`, `make eval`).
@@ -115,8 +118,8 @@ make destroy ENV=dev
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | the parts and the path of a request |
 | [docs/runbook.md](docs/runbook.md) | deploy, use, tear down, troubleshoot |
-| [docs/security.md](docs/security.md) | who can do what; every permission of the agent's role; residual risks |
-| [docs/adr/](docs/adr/) | decisions: CDK bootstrap, Cognito, the JWT authorizer, the gateway as the only entry, the page's hosting, long-term memory, the guardrail |
+| [docs/security.md](docs/security.md) | who can do what; every permission of the stack's roles; residual risks |
+| [docs/adr/](docs/adr/) | decisions: CDK bootstrap, Cognito, the JWT authorizer, the gateway as the only entry, the page's hosting, long-term memory, the guardrail, Memory behind a gateway |
 
 ## License
 

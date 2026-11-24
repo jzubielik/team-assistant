@@ -15,8 +15,8 @@ cmd_setup() {
 	awsv=$(aws --version 2>&1)
 	[[ "$awsv" == aws-cli/2.* ]] || die "AWS CLI v2 is required (found: $awsv)"
 	# Offline probe: prints a request skeleton, no API call (works without groff, unlike help).
-	aws bedrock-agentcore-control list-agent-runtimes --generate-cli-skeleton </dev/null >/dev/null 2>&1 ||
-		die "this AWS CLI ($awsv) has no bedrock-agentcore-control commands; update the AWS CLI v2"
+	aws bedrock-agentcore-control create-policy --generate-cli-skeleton </dev/null >/dev/null 2>&1 ||
+		die "this AWS CLI ($awsv) lacks the bedrock-agentcore-control commands make deploy uses; update the AWS CLI v2"
 	docker info >/dev/null 2>&1 || die "docker daemon not reachable (docker info failed): start Docker"
 	docker buildx version >/dev/null 2>&1 || die "docker buildx is missing"
 	# The agent image is linux/arm64; an x86-64 host builds it under QEMU emulation.
@@ -154,6 +154,7 @@ cmd_deploy() {
 		--tags project=team-assistant "env=$ENV"
 	echo "--- $STACK"
 	cdk_ deploy "$STACK"
+	refresh_memory_rules
 	# CloudFormation cannot set return URLs on the workload identity the Runtime creates, so
 	# the operator's profile does it after every deploy (same values each time): make chat's
 	# listener, and the web page's return page on its development server and on CloudFront.
@@ -167,6 +168,97 @@ cmd_deploy() {
 		"$web_url/callback.html" >/dev/null
 	publish_web
 	echo "deploy: done ($STACK); the page: $web_url"
+}
+
+# The Memory gateway gives its access rules the actor id of a request for a conversation's
+# history (ListEvents) or for the conversation list (ListSessions) only after a rule naming
+# that operation was deleted; after one was created it gives none, and the rules refuse the
+# user's own request (docs/adr/0008). A deploy only creates rules, so after every deploy a
+# rule that permits nothing is created and deleted for each of the two operations. A rule
+# that a stopped run left behind is deleted first.
+refresh_memory_rules() {
+	local engine gateway entry name action statement ids id status
+	local again="the agent is refused its users' history until this step ends well: run make deploy ENV=$ENV again"
+	engine=$(stack_output MemoryRulesId)
+	gateway=$(stack_output MemoryGatewayArn)
+	echo "--- access rules of the Memory gateway: a rule created and deleted for the history and for the conversation list"
+	for entry in "events /sessions/{sessionId}" "sessions /sessions"; do
+		name="refresh_${entry%% *}_${ENV//-/_}"
+		# An operation's name in a rule, as in stack.py (_memory_rules).
+		action="${MEMORY_TARGET}___POST:/memories/{memoryId}/actor/{actorId}${entry#* }"
+		ids=$(left_rules "${entry%% *}" 2>&1) || die "could not list the access rules: $(mask "$ids"); $again"
+		for id in $ids; do
+			[[ "$id" == None ]] || delete_rule "$id" || die "$again"
+		done
+		# The user pool gives no user the id "nobody": no token meets the condition.
+		statement="permit(principal is AgentCore::OAuthUser, action == AgentCore::Action::\"$action\", resource == AgentCore::Gateway::\"$gateway\") when { principal.hasTag(\"sub\") && principal.getTag(\"sub\") == \"nobody\" && context has input && context.input has nextToken && context.input.nextToken == \"never\" };"
+		id=$(rules_ create-policy --name "$name" --description "Permits nothing; see docs/adr/0008" \
+			--definition "{\"cedar\":{\"statement\":\"${statement//\"/\\\"}\"}}" \
+			--validation-mode FAIL_ON_ANY_FINDINGS \
+			--query policyId --output text 2>&1) ||
+			die "could not create the access rule $name: $(mask "$id"); $again"
+		status=CREATING
+		for _ in $(seq 60); do
+			# An error here must not skip the delete below.
+			status=$(rules_ get-policy --policy-id "$id" --query status --output text 2>&1) || break
+			[[ "$status" != CREATING ]] && break
+			sleep 2
+		done
+		delete_rule "$id" || die "$again"
+		[[ "$status" == ACTIVE ]] ||
+			die "the access rule $name did not come into force ($(mask "$status")); $again"
+	done
+}
+
+rules_() { # command and its options
+	local command=$1
+	shift
+	aws_ bedrock-agentcore-control "$command" --policy-engine-id "$engine" "$@"
+}
+
+# Delete a rule and wait until it is gone: the gateway changes its behaviour only then.
+# Returns 1 with a message when that did not work.
+delete_rule() { # policy id
+	local out
+	if ! out=$(rules_ delete-policy --policy-id "$1" 2>&1); then
+		echo "error: could not delete the access rule $1: $(mask "$out")" >&2
+		return 1
+	fi
+	for _ in $(seq 60); do
+		if ! out=$(rules_ get-policy --policy-id "$1" --query status --output text 2>&1); then
+			[[ "$out" == *ResourceNotFound* ]] && return 0
+			echo "error: could not read the access rule $1: $(mask "$out")" >&2
+			return 1
+		fi
+		if [[ "$out" == DELETE_FAILED ]]; then
+			echo "error: the service could not delete the access rule $1 (DELETE_FAILED)" >&2
+			return 1
+		fi
+		sleep 2
+	done
+	echo "error: the access rule $1 was not deleted within two minutes" >&2
+	return 1
+}
+
+# The rules refresh_memory_rules left when it was stopped between create and delete: the
+# stack does not know them.
+left_rules() { # operation (events or sessions)
+	rules_ list-policies --query "policies[?name=='refresh_$1_${ENV//-/_}'].policyId" --output text
+}
+
+delete_left_rules() {
+	local engine operation ids id
+	engine=$(aws_ cloudformation describe-stacks --stack-name "$STACK" \
+		--query "Stacks[0].Outputs[?OutputKey=='MemoryRulesId'].OutputValue" --output text 2>/dev/null || :)
+	[[ -n "$engine" && "$engine" != None ]] || return 0
+	for operation in events sessions; do
+		ids=$(left_rules "$operation" 2>/dev/null || :)
+		for id in $ids; do
+			[[ "$id" == None ]] && continue
+			echo "--- access rule left by a stopped deploy: deleting $id"
+			delete_rule "$id" || echo "warning: the stack delete may fail on its policy engine"
+		done
+	done
 }
 
 # The web page: build it, write this environment's config.json and Content Security
@@ -214,6 +306,7 @@ cmd_destroy() {
 	delete_secret "GitHub client secret" "$GITHUB_SECRET"
 	delete_secret "placeholder secret of the token exchange provider" "$EXCHANGE_SECRET"
 	empty_web_bucket
+	delete_left_rules
 	cdk_ destroy "$STACK" --force
 	delete_agent_images
 	delete_runtime_logs
@@ -473,7 +566,7 @@ cmd_smoke() {
 	need_aws
 	banner "smoke: end-to-end checks on $STACK as alice and bob (a few model calls; waits up to 5 min for long-term records; alice must have consented to GitHub)"
 	# Read before the call: a failed $(...) inside an argument list would not stop the script.
-	local gateway runtime memory domain client web_url web_bucket guardrail
+	local gateway runtime memory domain client web_url web_bucket guardrail memory_gateway
 	gateway=$(stack_output GatewayUrl)
 	web_url=$(stack_output WebUrl)
 	web_bucket=$(stack_output WebBucket)
@@ -482,11 +575,13 @@ cmd_smoke() {
 	domain=$(stack_output LoginDomain)
 	client=$(stack_output UserPoolClientId)
 	guardrail=$(stack_output GuardrailId)
+	memory_gateway=$(stack_output MemoryGatewayUrl)
 	py scripts/smoke.py --profile "$PROFILE" --region "$REGION" \
 		--gateway-url "$gateway" --gateway-target "$GATEWAY_TARGET" \
 		--runtime-arn "$runtime" --memory-id "$memory" \
 		--login-domain "$domain" --client-id "$client" --env "$ENV" \
-		--web-url "$web_url" --web-bucket "$web_bucket" --guardrail-id "$guardrail"
+		--web-url "$web_url" --web-bucket "$web_bucket" --guardrail-id "$guardrail" \
+		--memory-gateway-url "$memory_gateway"
 }
 
 # Fills one user's long-term memory with scripted conversations and writes down the records
