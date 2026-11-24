@@ -62,11 +62,16 @@ def test_stack_has_only_the_expected_resource_types():
         "AWS::BedrockAgentCore::Runtime",
         "AWS::BedrockAgentCore::Gateway",
         "AWS::BedrockAgentCore::GatewayTarget",
+        "AWS::BedrockAgentCore::PolicyEngine",
+        "AWS::BedrockAgentCore::Policy",
         "AWS::IAM::Role",
         "AWS::IAM::Policy",
         "AWS::SecretsManager::Secret",
         "AWS::BedrockAgentCore::OAuth2CredentialProvider",
         "AWS::Bedrock::Guardrail",
+        # The function that adds the Memory namespaces to a token.
+        "AWS::Lambda::Function",
+        "AWS::Lambda::Permission",
         # The web page: no Lambda function, no custom resource.
         "AWS::S3::Bucket",
         "AWS::S3::BucketPolicy",
@@ -115,7 +120,7 @@ def test_runtime_accepts_only_tokens_of_this_pools_client_bound_to_this_agent():
     assert authorizer["AllowedAudience"] == ["https://team-assistant-dev.agent"]
     # Only requests relayed by this environment's gateway: a direct call is refused even with
     # a valid token.
-    (gateway_id,) = _ids("AWS::BedrockAgentCore::Gateway")
+    gateway_id = _gateway_id("team-assistant-dev-gateway")
     assert authorizer["AllowedWorkloadConfiguration"] == {
         "HostingEnvironments": [{"Arn": {"Fn::GetAtt": [gateway_id, "GatewayArn"]}}]
     }
@@ -143,6 +148,7 @@ def test_tracing_is_off_by_default_and_the_agent_then_exports_nothing():
     (runtime,) = resources(TEMPLATE, "AWS::BedrockAgentCore::Runtime")
     variables = dict(runtime["Properties"]["EnvironmentVariables"])
     del variables["MEMORY_ID"], variables["GITHUB_PROVIDER"], variables["WEB_URL"]
+    del variables["MEMORY_GATEWAY_URL"]
     del variables["GUARDRAIL_ID"]
     assert variables == {
         # The Runtime adds none of its OpenTelemetry settings to the container.
@@ -163,6 +169,7 @@ def test_runtime_tracing_settings_keep_content_out_and_spans_deletable():
     (runtime,) = resources(traced, "AWS::BedrockAgentCore::Runtime")
     variables = dict(runtime["Properties"]["EnvironmentVariables"])
     del variables["MEMORY_ID"], variables["GITHUB_PROVIDER"], variables["WEB_URL"]
+    del variables["MEMORY_GATEWAY_URL"]
     del variables["GUARDRAIL_ID"]
     disabled = variables.pop("OTEL_PYTHON_DISABLED_INSTRUMENTATIONS").split(",")
     assert variables == {
@@ -220,20 +227,22 @@ def test_both_roles_are_under_the_project_path_with_the_boundary_and_a_narrow_tr
         assert "TeamAssistantCdkPermissionsBoundary-dev" in str(properties["PermissionsBoundary"])
         (trust,) = properties["AssumeRolePolicyDocument"]["Statement"]
         assert trust["Action"] == "sts:AssumeRole"
+        if trust["Principal"] == {"Service": "lambda.amazonaws.com"}:
+            continue  # test_token_claims_function_has_a_role_without_permissions
         assert trust["Principal"] == {"Service": "bedrock-agentcore.amazonaws.com"}
         assert trust["Condition"]["StringEquals"] == {"aws:SourceAccount": CONTEXT["account"]}
         assert set(trust["Condition"]) == {"StringEquals", "ArnLike"}
         sources.append(str(trust["Condition"]["ArnLike"]))
-    runtime, gateway = sorted(sources, key=lambda source: "gateway/" in source)
+    gateway, memory_gateway, runtime = sorted(sources, key=lambda source: source.split(":")[-1])
     assert ":runtime/team_assistant_dev_runtime-*" in runtime
     assert ":gateway/team-assistant-dev-gateway-*" in gateway
-    assert len(sources) == 2
+    assert ":gateway/team-assistant-dev-memory-*" in memory_gateway
+    assert len(sources) == 3
 
 
 def test_gateway_accepts_only_tokens_of_this_pools_client_bound_to_this_agent():
-    (gateway,) = resources(TEMPLATE, "AWS::BedrockAgentCore::Gateway")
+    gateway = _gateway("team-assistant-dev-gateway")
     properties = gateway["Properties"]
-    assert properties["Name"] == "team-assistant-dev-gateway"
     assert properties["AuthorizerType"] == "CUSTOM_JWT"
     (pool_id,) = _ids("AWS::Cognito::UserPool")
     client_id = _client_id("cli")
@@ -245,12 +254,10 @@ def test_gateway_accepts_only_tokens_of_this_pools_client_bound_to_this_agent():
     assert set(authorizer) == {"AllowedClients", "AllowedAudience", "DiscoveryUrl"}
     # No protocol type: the only value is MCP, and the gateway relays plain HTTP to the Runtime.
     assert "ProtocolType" not in properties and "ProtocolConfiguration" not in properties
-    gateway_roles = [
-        k
-        for k, r in TEMPLATE["Resources"].items()
-        if r["Type"] == "AWS::IAM::Role" and "gateway/" in str(r["Properties"])
-    ]
-    assert properties["RoleArn"] == {"Fn::GetAtt": [gateway_roles[0], "Arn"]}
+    (role_id,) = [k for k in _ids("AWS::IAM::Role") if k.startswith("GatewayRole")]
+    assert properties["RoleArn"] == {"Fn::GetAtt": [role_id, "Arn"]}
+    # Only the Memory gateway has access rules: they refuse whatever no rule permits.
+    assert "PolicyEngineConfiguration" not in properties
     assert properties["Tags"] == {"project": "team-assistant", "env": "dev"}
     assert gateway["DeletionPolicy"] == "Delete"
     url = TEMPLATE["Outputs"]["GatewayUrl"]["Value"]
@@ -269,26 +276,25 @@ def test_the_role_names_only_the_configured_model_and_this_memory():
     assert all("claude-haiku-4-5-20251001-v1:0" in arn for arn in arns)
     assert any("inference-profile/global.anthropic" in arn for arn in arns)
     assert not any(arn.endswith("/*']]}") for arn in arns)
-    events = statements["ConversationEvents"]
-    assert events["Resource"] == {"Fn::GetAtt": ["Memory", "MemoryArn"]}
-    assert "bedrock-agentcore:ListSessions" in events["Action"]
-    assert not [a for a in events["Action"] if "Record" in a or "Memory" in a.split(":")[1][:6]]
 
 
-def test_runtime_role_can_retrieve_records():
-    statements = {
-        s.get("Sid"): s
+def test_runtime_role_has_no_memory_action_and_the_agent_knows_the_memory_gateway():
+    (role_id,) = [k for k in _ids("AWS::IAM::Role") if k.startswith("RuntimeExecutionRole")]
+    actions = {
+        action
         for policy in resources(TEMPLATE, "AWS::IAM::Policy")
+        if {"Ref": role_id} in policy["Properties"]["Roles"]
         for s in policy["Properties"]["PolicyDocument"]["Statement"]
+        if s["Effect"] == "Allow"
+        for action in ([s["Action"]] if isinstance(s["Action"], str) else s["Action"])
     }
-    records = statements["LongTermRecords"]
-    # Search and list: the agent neither reads records one by one nor deletes them.
-    assert sorted(records["Action"]) == [
-        "bedrock-agentcore:ListMemoryRecords",
-        "bedrock-agentcore:RetrieveMemoryRecords",
-    ]
-    assert records["Resource"] == {"Fn::GetAtt": ["Memory", "MemoryArn"]}
-    assert records["Effect"] == "Allow"
+    memory = {"CreateEvent", "GetEvent", "ListEvents", "DeleteEvent", "ListSessions"}
+    memory |= {"ListMemoryRecords", "RetrieveMemoryRecords", "GetMemoryRecord"}
+    assert not actions & {f"bedrock-agentcore:{name}" for name in memory}
+    (runtime,) = resources(TEMPLATE, "AWS::BedrockAgentCore::Runtime")
+    variables = runtime["Properties"]["EnvironmentVariables"]
+    gateway_id = _gateway_id("team-assistant-dev-memory")
+    assert variables["MEMORY_GATEWAY_URL"] == {"Fn::GetAtt": [gateway_id, "GatewayUrl"]}
 
 
 def test_the_guardrail_checks_inputs_for_prompt_attacks_only():
@@ -427,6 +433,68 @@ def test_user_pool_is_essentials_and_closed_to_sign_up():
     assert properties.get("AutoVerifiedAttributes", []) == []
 
 
+def test_the_pool_calls_the_token_claims_function_for_access_tokens():
+    (pool,) = resources(TEMPLATE, "AWS::Cognito::UserPool")
+    (function_id,) = [
+        key for key, r in TEMPLATE["Resources"].items() if r["Type"] == "AWS::Lambda::Function"
+    ]
+    trigger = pool["Properties"]["LambdaConfig"]["PreTokenGenerationConfig"]
+    # V2_0: the version that changes access tokens.
+    assert trigger == {"LambdaArn": {"Fn::GetAtt": [function_id, "Arn"]}, "LambdaVersion": "V2_0"}
+    (permission,) = resources(TEMPLATE, "AWS::Lambda::Permission")
+    assert permission["Properties"]["Principal"] == "cognito-idp.amazonaws.com"
+    assert permission["Properties"]["Action"] == "lambda:InvokeFunction"
+    assert "Users" in str(permission["Properties"]["SourceArn"])
+
+
+def _token_claims_function() -> dict:
+    (function,) = resources(TEMPLATE, "AWS::Lambda::Function")
+    return function["Properties"]
+
+
+def test_token_claims_function_adds_the_users_namespaces_to_the_access_token():
+    from team_assistant.config import claim_namespaces
+
+    properties = _token_claims_function()
+    assert properties["FunctionName"] == "team-assistant-dev-token-claims"
+    assert properties["Runtime"] == "python3.13"
+    scope: dict = {}
+    exec(properties["Code"]["ZipFile"], scope)  # noqa: S102 - the stack's own inline code
+    event = {
+        "triggerSource": "TokenGeneration_TokenExchange",
+        "request": {"userAttributes": {"sub": "u-1"}, "scopes": ["openid"]},
+        "response": {"claimsAndScopeOverrideDetails": None},
+    }
+    result = scope[properties["Handler"].split(".")[1]](event, None)
+    assert result["request"] == {"userAttributes": {"sub": "u-1"}, "scopes": ["openid"]}
+    assert result["response"] == {
+        "claimsAndScopeOverrideDetails": {
+            "accessTokenGeneration": {"claimsToAddOrOverride": claim_namespaces("u-1")}
+        }
+    }
+
+
+def test_token_claims_function_leaves_an_event_without_a_user_id_as_it_is():
+    properties = _token_claims_function()
+    scope: dict = {}
+    exec(properties["Code"]["ZipFile"], scope)  # noqa: S102 - the stack's own inline code
+    for request in ({}, {"userAttributes": {}}, {"userAttributes": None}):
+        event = {"request": request, "response": {"claimsAndScopeOverrideDetails": None}}
+        assert scope["handler"](dict(event), None) == event
+
+
+def test_token_claims_function_has_a_role_without_permissions():
+    role_id = _token_claims_function()["Role"]["Fn::GetAtt"][0]
+    role = TEMPLATE["Resources"][role_id]["Properties"]
+    assert "ManagedPolicyArns" not in role and "Policies" not in role
+    attached = [
+        policy
+        for policy in resources(TEMPLATE, "AWS::IAM::Policy")
+        if {"Ref": role_id} in policy["Properties"]["Roles"]
+    ]
+    assert attached == []
+
+
 def test_app_client_is_public_and_uses_the_authorization_code_flow_only():
     properties = TEMPLATE["Resources"][_client_id("cli")]["Properties"]
     assert properties.get("GenerateSecret", False) is False
@@ -563,8 +631,8 @@ def test_audience_is_a_resource_server_without_scopes():
 
 
 def test_gateway_target_is_the_runtime_and_exchanges_the_users_token():
-    (target,) = resources(TEMPLATE, "AWS::BedrockAgentCore::GatewayTarget")
-    (gateway_id,) = _ids("AWS::BedrockAgentCore::Gateway")
+    target = _target("agent")
+    gateway_id = _gateway_id("team-assistant-dev-gateway")
     (runtime_id,) = _ids("AWS::BedrockAgentCore::Runtime")
     properties = target["Properties"]
     assert properties["Name"] == "agent"
@@ -634,8 +702,182 @@ def test_gateway_role_can_invoke_this_runtime_and_exchange_tokens_and_nothing_el
     assert "workload-identity/team-assistant-dev-gateway-*" in text
     assert "*" not in [r for r in exchange["Resource"] if isinstance(r, str)]
     # The role can act before the target is created.
-    (target,) = resources(TEMPLATE, "AWS::BedrockAgentCore::GatewayTarget")
-    assert policy_id in target["DependsOn"]
+    assert policy_id in _target("agent")["DependsOn"]
+
+
+def _gateway_id(name: str) -> str:
+    (found,) = [
+        k
+        for k in _ids("AWS::BedrockAgentCore::Gateway")
+        if TEMPLATE["Resources"][k]["Properties"]["Name"] == name
+    ]
+    return found
+
+
+def _gateway(name: str) -> dict:
+    return TEMPLATE["Resources"][_gateway_id(name)]
+
+
+def _target(name: str) -> dict:
+    (target,) = [
+        t
+        for t in resources(TEMPLATE, "AWS::BedrockAgentCore::GatewayTarget")
+        if t["Properties"]["Name"] == name
+    ]
+    return target
+
+
+def _flat(value) -> str:
+    """A template value as text, a reference written as <logical id.attribute>."""
+    if isinstance(value, str):
+        return value
+    if "Fn::Join" in value:
+        separator, parts = value["Fn::Join"]
+        return separator.join(_flat(part) for part in parts)
+    if "Fn::GetAtt" in value:
+        return "<{}.{}>".format(*value["Fn::GetAtt"])
+    return "<{}>".format(value["Ref"])
+
+
+def test_memory_gateway_takes_the_same_tokens_and_enforces_the_access_rules():
+    properties = _gateway("team-assistant-dev-memory")["Properties"]
+    agent = _gateway("team-assistant-dev-gateway")["Properties"]
+    assert properties["AuthorizerType"] == "CUSTOM_JWT"
+    assert properties["AuthorizerConfiguration"] == agent["AuthorizerConfiguration"]
+    # No protocol type: a connector target is plain HTTP.
+    assert "ProtocolType" not in properties
+    (engine_id,) = _ids("AWS::BedrockAgentCore::PolicyEngine")
+    assert properties["PolicyEngineConfiguration"] == {
+        "Arn": {"Fn::GetAtt": [engine_id, "PolicyEngineArn"]},
+        "Mode": "ENFORCE",
+    }
+    engine = TEMPLATE["Resources"][engine_id]
+    assert engine["Properties"]["Name"] == "team_assistant_dev_memory"
+    assert engine["DeletionPolicy"] == "Delete"
+    (role_id,) = [k for k in _ids("AWS::IAM::Role") if k.startswith("MemoryGatewayRole")]
+    assert properties["RoleArn"] == {"Fn::GetAtt": [role_id, "Arn"]}
+    assert _gateway("team-assistant-dev-memory")["DeletionPolicy"] == "Delete"
+    url = TEMPLATE["Outputs"]["MemoryGatewayUrl"]["Value"]
+    gateway_id = _gateway_id("team-assistant-dev-memory")
+    assert url == {"Fn::GetAtt": [gateway_id, "GatewayUrl"]}
+
+
+def test_memory_gateway_target_is_this_memory_called_with_the_gateways_role():
+    target = _target("memory")
+    properties = target["Properties"]
+    (memory_id,) = _ids("AWS::BedrockAgentCore::Memory")
+    assert properties["TargetConfiguration"] == {
+        "Http": {
+            "Connector": {
+                "Source": {"ConnectorId": "agentcore-memory"},
+                "Parameters": {"memoryId": {"Fn::GetAtt": [memory_id, "MemoryId"]}},
+            }
+        }
+    }
+    assert properties["CredentialProviderConfigurations"] == [
+        {"CredentialProviderType": "GATEWAY_IAM_ROLE"}
+    ]
+    assert target["DeletionPolicy"] == "Delete"
+
+
+EVENT_ACTIONS = [
+    "memory___POST:/memories/{memoryId}/actor/{actorId}/sessions/{sessionId}",
+    "memory___POST:/memories/{memoryId}/actor/{actorId}/sessions",
+    "memory___POST:/memories/{memoryId}/events",
+]
+
+
+def test_the_access_rules_let_a_user_reach_only_their_own_memory():
+    gateway_id = _gateway_id("team-assistant-dev-memory")
+    (engine_id,) = _ids("AWS::BedrockAgentCore::PolicyEngine")
+    (target_id,) = [
+        k
+        for k in _ids("AWS::BedrockAgentCore::GatewayTarget")
+        if TEMPLATE["Resources"][k]["Properties"]["Name"] == "memory"
+    ]
+    policies = {
+        p["Properties"]["Name"]: p for p in resources(TEMPLATE, "AWS::BedrockAgentCore::Policy")
+    }
+    # Named with the environment.
+    assert all(name.endswith("_dev") for name in policies)
+    policies = {name.removesuffix("_dev"): policy for name, policy in policies.items()}
+    assert set(policies) == {"own_events", "earlier_layout", "own_preferences", "own_records"}
+    head = 'permit(principal is AgentCore::OAuthUser, action {}, resource == AgentCore::Gateway::"<'
+    head += gateway_id + '.GatewayArn>") when {{ '
+    guard = "context has input && context.input has "
+    expected = {
+        "own_events": head.format(
+            "in [" + ", ".join(f'AgentCore::Action::"{a}"' for a in EVENT_ACTIONS) + "]"
+        )
+        + 'principal.hasTag("sub") && '
+        + guard
+        + 'actorId && context.input.actorId == principal.getTag("sub") };',
+        # A read only, of the actor the SDK's session manager also looks under.
+        "earlier_layout": head.format(f'== AgentCore::Action::"{EVENT_ACTIONS[0]}"')
+        + guard
+        + 'actorId && context.input.actorId like "session_*" };',
+        "own_preferences": head.format(
+            '== AgentCore::Action::"memory___POST:/memories/{memoryId}/memoryRecords"'
+        )
+        + 'principal.hasTag("memory_preferences") && '
+        + guard
+        + "namespace && !(context.input has namespacePath) && "
+        + 'context.input.namespace == principal.getTag("memory_preferences") };',
+        "own_records": head.format(
+            '== AgentCore::Action::"memory___POST:/memories/{memoryId}/retrieve"'
+        )
+        + 'principal.hasTag("memory_facts") && principal.hasTag("memory_summaries") && '
+        + guard
+        + "namespacePath && !(context.input has namespace) && "
+        + '(context.input.namespacePath == principal.getTag("memory_facts") || '
+        + 'context.input.namespacePath == principal.getTag("memory_summaries")) };',
+    }
+    for name, policy in policies.items():
+        properties = policy["Properties"]
+        assert _flat(properties["Definition"]["Cedar"]["Statement"]) == expected[name], name
+        assert properties["PolicyEngineId"] == {"Fn::GetAtt": [engine_id, "PolicyEngineId"]}
+        # A rule is checked against the target's operations, so the target comes first.
+        assert target_id in policy["DependsOn"]
+        assert policy["DeletionPolicy"] == "Delete"
+
+
+def test_memory_gateway_role_can_call_this_memory_and_ask_the_rules_and_nothing_else():
+    (role_id,) = [k for k in _ids("AWS::IAM::Role") if k.startswith("MemoryGatewayRole")]
+    (memory_id,) = _ids("AWS::BedrockAgentCore::Memory")
+    (engine_id,) = _ids("AWS::BedrockAgentCore::PolicyEngine")
+    (policy_id,) = [
+        k
+        for k, r in TEMPLATE["Resources"].items()
+        if r["Type"] == "AWS::IAM::Policy" and r["Properties"]["Roles"] == [{"Ref": role_id}]
+    ]
+    statements = {
+        s["Sid"]: s
+        for s in TEMPLATE["Resources"][policy_id]["Properties"]["PolicyDocument"]["Statement"]
+    }
+    assert set(statements) == {"MemoryOfTheTokensUser", "ReadAccessRules", "AskAccessRules"}
+    memory = statements["MemoryOfTheTokensUser"]
+    assert sorted(memory["Action"]) == [
+        "bedrock-agentcore:CreateEvent",
+        "bedrock-agentcore:ListEvents",
+        "bedrock-agentcore:ListMemoryRecords",
+        "bedrock-agentcore:ListSessions",
+        "bedrock-agentcore:RetrieveMemoryRecords",
+    ]
+    assert memory["Resource"] == {"Fn::GetAtt": [memory_id, "MemoryArn"]}
+    engine_arn = {"Fn::GetAtt": [engine_id, "PolicyEngineArn"]}
+    assert statements["ReadAccessRules"]["Action"] == "bedrock-agentcore:GetPolicyEngine"
+    assert statements["ReadAccessRules"]["Resource"] == engine_arn
+    ask = statements["AskAccessRules"]
+    assert sorted(ask["Action"]) == [
+        "bedrock-agentcore:AuthorizeAction",
+        "bedrock-agentcore:PartiallyAuthorizeActions",
+    ]
+    assert ask["Resource"][0] == engine_arn
+    assert _flat(ask["Resource"][1]).endswith(":gateway/team-assistant-dev-memory-*")
+    assert len(ask["Resource"]) == 2
+    # The role can act before the gateway and its target are created.
+    assert policy_id in _target("memory")["DependsOn"]
+    assert policy_id in _gateway("team-assistant-dev-memory")["DependsOn"]
 
 
 def test_outputs():
@@ -650,6 +892,9 @@ def test_outputs():
         "GuardrailId",
         "RuntimeArn",
         "GatewayUrl",
+        "MemoryGatewayUrl",
+        "MemoryGatewayArn",
+        "MemoryRulesId",
         "GithubCallbackUrl",
         "WebUrl",
         "WebBucket",

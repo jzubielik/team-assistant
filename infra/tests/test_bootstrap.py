@@ -77,7 +77,7 @@ DENIES = [s for policy in EXECUTION_POLICIES for s in statements(policy, "Deny")
 
 
 def test_templates_hold_only_managed_policies():
-    for template, count in ((EXECUTION, 5), (BOUNDARY, 1)):
+    for template, count in ((EXECUTION, 6), (BOUNDARY, 1)):
         assert {r["Type"] for r in template["Resources"].values()} == {"AWS::IAM::ManagedPolicy"}
         assert len(template["Resources"]) == count
 
@@ -117,6 +117,8 @@ EVERY_RESOURCE = {
     "GatewayCreate": "CreateGateway supports no resource type; the request must carry the tag",
     "GithubSecretPlaceholder": "GetRandomPassword supports no resource type; returns random text",
     "GuardrailCreate": "CreateGuardrail has no guardrail resource; the request must carry the tag",
+    "PolicyEngineCreate": "CreatePolicyEngine supports no resource type; needs the tag",
+    "PolicyAdmin": "ManageAdminPolicy supports no resource type",
 }
 # Creates authorized on <type>/* because the id does not exist yet; each requires the tag.
 TAGGED_CREATES = {"RuntimeCreate", "RuntimeTagOnCreate"}
@@ -195,12 +197,52 @@ def test_roles_without_the_boundary_are_denied_on_every_resource():
     assert text(deny["Condition"]["StringNotLike"]["iam:PermissionsBoundary"]) == BOUNDARY_ARN
 
 
-def test_roles_can_be_passed_only_to_agentcore():
+def test_roles_can_be_passed_only_to_agentcore_and_lambda():
     (pass_role,) = [s for s in ALLOWS if "iam:PassRole" in as_list(s["Action"])]
     assert text(pass_role["Resource"]) == ROLE_ARN
     assert pass_role["Condition"] == {
-        "StringEquals": {"iam:PassedToService": "bedrock-agentcore.amazonaws.com"}
+        "StringEquals": {
+            "iam:PassedToService": ["bedrock-agentcore.amazonaws.com", "lambda.amazonaws.com"]
+        }
     }
+
+
+def test_access_rules_and_the_token_claims_function_are_limited_to_this_projects_names():
+    by_sid = {s["Sid"]: s for s in ALLOWS}
+    create = by_sid["PolicyEngineCreate"]
+    assert create["Condition"] == {"StringEquals": {"aws:RequestTag/project": "team-assistant"}}
+    assert create["Action"] == "bedrock-agentcore:CreatePolicyEngine"
+    # Tags only on policy engines, not on every resource the create statement names.
+    tag = by_sid["PolicyEngineTagOnCreate"]
+    assert tag["Action"] == "bedrock-agentcore:TagResource"
+    assert text(tag["Resource"]).endswith(":policy-engine/*")
+    assert tag["Condition"] == create["Condition"]
+    engine = [text(r) for r in as_list(by_sid["PolicyEngine"]["Resource"])]
+    assert [r.split(":")[-1] for r in engine] == [
+        "policy-engine/team_assistant_*",
+        "policy-engine/team_assistant_*/policy/*",
+    ]
+    scoped = by_sid["PolicyForGateway"]
+    assert text(scoped["Resource"]).endswith(":gateway/team-assistant-*-memory-*")
+    assert {"bedrock-agentcore:InvokeGateway", "bedrock-agentcore:ListGatewayTargets"} < set(
+        scoped["Action"]
+    )
+    function = by_sid["TokenClaimsFunction"]
+    assert text(function["Resource"]).endswith(":function:team-assistant-*-token-claims")
+    assert all(a.startswith("lambda:") for a in function["Action"])
+    n = naming.names(*NAMES_ARGS)
+    assert n.policy_engine.startswith("team_assistant_")
+    assert n.token_claims.startswith("team-assistant-") and n.token_claims.endswith("-token-claims")
+
+
+def test_boundary_lets_the_memory_gateway_ask_this_environments_access_rules():
+    by_sid = {s["Sid"]: s for s in BOUNDARY_ALLOWS}
+    rules = [text(r).split(":")[-1] for r in as_list(by_sid["MemoryAccessRules"]["Resource"])]
+    assert rules == ["policy-engine/${MemoryName}-*", "gateway/team-assistant-${Env}-memory-*"]
+    n = naming.names(*NAMES_ARGS)
+    # The boundary names the engine by the Memory's name parameter.
+    assert n.policy_engine == n.memory
+    assert n.memory_gateway == "team-assistant-dev-memory"
 
 
 def test_bootstrap_version_parameter_matches_the_qualifier():

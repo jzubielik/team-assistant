@@ -454,6 +454,35 @@ def test_guardrail_passes_only_when_it_stops_the_attack_and_lets_plain_text_thro
     assert not smoke.check_guardrail(guardrail({smoke.ATTACK, smoke.PLAIN}))[0]
 
 
+def test_memory_gateway_passes_only_when_a_user_reaches_their_own_memory_and_no_other():
+    def gateway(statuses: dict):
+        # (whose memory, what) -> HTTP status; the token is always the first user's.
+        def reach(user, owner, what):
+            assert user == "alice"
+            return statuses.get((owner, what), 200 if owner == user else 403)
+
+        return reach
+
+    passed, detail = smoke.check_memory_gateway(gateway({}), "alice", "bob")
+    assert passed, detail
+    for wrong in (
+        {("alice", "sessions"): 403},
+        {("alice", "facts"): 403},
+        {("alice", "preferences"): 403},
+        {("bob", "preferences"): 200},
+        {("bob", "sessions"): 200},
+        {("bob", "facts"): 200},
+        {("bob", "facts"): 500},
+        {("bob", "a new event"): 201},
+        {("bob", "facts beside the caller's own"): 200},
+        {("bob", "events"): 200},
+        {("bob", "sessions with the caller's id in the body"): 200},
+    ):
+        passed, detail = smoke.check_memory_gateway(gateway(wrong), "alice", "bob")
+        ((owner, what),) = wrong
+        assert not passed and owner in detail and what in detail, detail
+
+
 def test_github_tool_passes_when_alice_gets_issues_and_bob_is_asked_to_consent():
     passed, detail = smoke.check_github_tool(github_agent({"alice"}), "alice", "bob")
     assert passed, detail

@@ -27,10 +27,20 @@ Who can do what in one environment.
    the user who used it first for as long as the session's microVM runs, and refuses it to
    anyone else: two users never share a microVM. A stopped session's id is free again; its
    history stays per user.
-5. **Permissions.** The agent's role (below) can call one model, read and write one Memory,
-   apply one guardrail and get users' GitHub tokens from one provider; the gateway's role can
-   only exchange tokens through its own provider and invoke this Runtime. Deployments run with a
-   separate, limited role (docs/adr/0001).
+5. **Memory gateway.** The agent reaches Memory only through a second gateway, with the
+   request's token. Its access rules pass a call on only when the actor id it names is the
+   token's `sub`, or the namespace it names is one the token carries as a claim, so a call
+   for another user's memory is refused (`make smoke`, "memory gateway"). The claims are
+   written by a function the user pool calls for every token (docs/adr/0008). One read is
+   open to every signed-in user: the events of an actor named `session_<id>`, where the SDK's
+   session manager looks for an earlier layout; nothing is stored there and no rule permits
+   a write. When the gateway gives the rules no actor id (docs/adr/0008), they refuse the
+   user's own history and conversation list as well: nothing more passes, only less.
+6. **Permissions.** The agent's role (below) can call one model, apply one guardrail and get
+   users' GitHub tokens from one provider; it has no Memory action. The gateway's role can
+   only exchange tokens through its own provider and invoke this Runtime; the Memory gateway's
+   role can call one Memory and ask its own access rules. Deployments run with a separate,
+   limited role (docs/adr/0001).
 
 ## Runtime role
 
@@ -42,14 +52,7 @@ The role the agent's container runs with: `RuntimeExecutionRole` in the stack, p
 |---|---|---|
 | `bedrock:InvokeModel` | the configured inference profile and the model it routes to | answer a message |
 | `bedrock:InvokeModelWithResponseStream` | the same | stream the answer |
-| `bedrock-agentcore:CreateEvent` | this environment's Memory | store a message or a conversation's title |
-| `bedrock-agentcore:GetEvent` | this environment's Memory | load the conversation |
-| `bedrock-agentcore:ListEvents` | this environment's Memory | load the conversation; read a conversation's history and title for the web page |
-| `bedrock-agentcore:ListSessions` | this environment's Memory | list the asking user's conversations for the web page (the actor comes from the token) |
-| `bedrock-agentcore:DeleteEvent` | this environment's Memory | the session manager replaces stored agent state |
 | `bedrock:ApplyGuardrail` | this environment's guardrail | check the GitHub tools' results for instructions to the assistant before the model reads them |
-| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | the model's memory tools search the user's facts, or the summaries of the user's conversations |
-| `bedrock-agentcore:ListMemoryRecords` | this environment's Memory | list the user's preferences for the system prompt |
 | `bedrock-agentcore:GetResourceOauth2Token` | the default token vault, this environment's GitHub provider, this Runtime's workload identity | get the asking user's GitHub token, or a consent URL |
 | `bedrock-agentcore:CompleteResourceTokenAuth` | the same | bind a user's consent to the user named by the request's token |
 | `secretsmanager:GetSecretValue` | this environment's GitHub client secret | AgentCore reads the OAuth App's secret with the caller's credentials |
@@ -109,10 +112,31 @@ The gateway exchanges the caller's token at the user pool and sends the issued t
 Runtime, which verifies it again. The role holds `InvokeAgentRuntime`, as the official samples
 grant it.
 
+## Memory gateway role
+
+The role the Memory gateway acts with: `MemoryGatewayRole` in the stack, path
+`/team-assistant/`, limited by the same boundary. Only this environment's Memory gateway can
+assume it (trust policy: the AgentCore service, this account, a gateway named
+`team-assistant-<env>-memory`). The role serves every user; the access rules decide which
+user's memory a call may reach before the gateway uses it.
+
+| Action | Resource | Why |
+|---|---|---|
+| `bedrock-agentcore:CreateEvent` | this environment's Memory | store a message or a conversation's title |
+| `bedrock-agentcore:ListEvents` | this environment's Memory | load the conversation and the agent's stored state; read a conversation's history and title for the web page |
+| `bedrock-agentcore:ListSessions` | this environment's Memory | list the user's conversations for the web page |
+| `bedrock-agentcore:RetrieveMemoryRecords` | this environment's Memory | the model's memory tools search the user's facts, or the summaries of the user's conversations |
+| `bedrock-agentcore:ListMemoryRecords` | this environment's Memory | list the user's preferences for the system prompt |
+| `bedrock-agentcore:GetPolicyEngine` | this gateway's policy engine | read the access rules |
+| `bedrock-agentcore:AuthorizeAction` | this gateway's policy engine, this gateway | ask the access rules about a request |
+| `bedrock-agentcore:PartiallyAuthorizeActions` | the same | the same |
+
 ## Who can read conversations
 
-- **The agent**, for the user of the current request only: the actor id comes from the verified
-  token, never from the request body.
+- **The agent**, through the Memory gateway, for the user of the request's token only: the
+  gateway refuses a call for another actor id or namespace.
+- **A signed-in user**, at the Memory gateway with their own token: their own events and
+  records.
 - **The operator**, with the admin profile: AgentCore Memory's API lists any actor's events.
   `make seed` and `make eval` write a test user's conversations and records to the gitignored
   `measurements/`, and the judge of `make eval` sends that user's questions and answers to
@@ -205,12 +229,19 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
 
 ## Residual risks
 
-- Separation between users rests on the agent's code: the role can read every actor's events
-  and long-term records in the Memory, and the agent chooses the actor from the token. IAM has
-  condition keys for the actor (`bedrock-agentcore:actorId`) and, on `RetrieveMemoryRecords`
-  and `ListMemoryRecords`, for the namespace (`bedrock-agentcore:namespace`,
-  `bedrock-agentcore:namespacePath`), but one role serves all users, so none of them can be
-  bound to the caller here.
+- A signed-in user can call the Memory gateway directly: read and add their own events,
+  which the strategies turn into their own long-term records. A gateway with a JWT
+  authorizer cannot be limited to the agent.
+- The agent holds the token of the user it is answering: a taken-over agent can reach that
+  user's memory through the Memory gateway, and no other's.
+- The operator's credentials reach Memory without the gateway: the Memory has no resource
+  policy.
+- `make deploy` creates and deletes two access rules of the Memory gateway with the
+  operator's credentials (docs/adr/0008). Each permits nothing.
+- Every login, refresh and token exchange calls the token claims function, and its code
+  decides which namespaces a token names. Only a deployment can change it. It writes no log.
+- The agent uses the request's token until the request ends: one that expires before the
+  answer is stored loses that answer in the history.
 - A failed read of long-term memory does not stop the answer: without the listed preferences
   the agent answers without them (log line `preferences_failed`), and a memory tool that
   fails tells the model so (log line `tool_failed`). Both lines name the error type only; no
@@ -224,7 +255,8 @@ The Runtime stores the container's stdout in its log group; that cannot be switc
 - The gateway's token exchange narrows nothing: the issued token has the same user, client,
   scope and audience, and anyone who holds a user's token could exchange it. What protects the
   agent is that the Runtime accepts only the gateway; a stolen token still works through the
-  gateway until it expires (60 minutes).
+  gateway, and at the Memory gateway for that user's stored conversations, until it expires
+  (60 minutes).
 - The login client has the token exchange flow, which any holder of its tokens can use; it
   yields nothing beyond the token presented.
 - The token is passed to the agent's process. The agent never logs it.

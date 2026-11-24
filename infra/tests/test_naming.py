@@ -28,6 +28,9 @@ LIMITS = {
     "exchange_provider": (r"[a-zA-Z0-9\-_]+", 128),
     "exchange_secret": (r"[A-Za-z0-9/_+=.@-]+", 512),
     "gateway": (r"([0-9a-zA-Z][-]?){1,48}", 48),
+    "memory_gateway": (r"([0-9a-zA-Z][-]?){1,48}", 48),
+    "policy_engine": (r"[A-Za-z][A-Za-z0-9_]{0,47}", 48),
+    "token_claims": (r"[a-zA-Z0-9-_]+", 64),
     "web_bucket": (r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", 63),
     "guardrail": (r"[0-9a-zA-Z_-]+", 50),
     "audience": (r"[\x21\x23-\x5B\x5D-\x7E]+", 256),
@@ -59,6 +62,8 @@ def test_valid_env(env):
         # Its gateway would match the permissions of environment "dev" (…-dev-gateway-*).
         "dev-gateway-x",
         "gateway",
+        # The same for the Memory gateway (…-dev-memory-*).
+        "dev-memory",
     ],
 )
 def test_invalid_env(env):
@@ -84,6 +89,9 @@ def test_examples():
     assert n.gateway == "team-assistant-dev-gateway"
     assert n.exchange_provider == "team-assistant-dev-exchange"
     assert n.exchange_secret == "team-assistant/dev/exchange"
+    assert n.memory_gateway == "team-assistant-dev-memory"
+    assert n.policy_engine == "team_assistant_dev_memory"
+    assert n.token_claims == "team-assistant-dev-token-claims"
 
 
 def test_secret_name_does_not_end_like_a_secrets_manager_suffix():

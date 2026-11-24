@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 # team-assistant-cdk-policies (docs/adr/0001). Deployed by `make bootstrap` before
 # `cdk bootstrap`: TeamAssistantCdkExecution, TeamAssistantCdkExecutionRoles,
-# TeamAssistantCdkExecutionGateway, TeamAssistantCdkExecutionWeb and
-# TeamAssistantCdkExecutionGuardrail are the only policies of the
+# TeamAssistantCdkExecutionGateway, TeamAssistantCdkExecutionWeb,
+# TeamAssistantCdkExecutionGuardrail and TeamAssistantCdkExecutionMemoryGateway are the only
+# policies of the
 # CloudFormation execution role
 # of this project's CDK bootstrap
 # (cdk bootstrap --cloudformation-execution-policies), replacing the AdministratorAccess default.
@@ -82,7 +83,7 @@ Resources:
             # Only this project's memories, by name (a memory id is <name>-<10 characters>).
             # Not by tag: while a memory is being deleted its tags no longer authorize, and
             # CloudFormation's GetMemory was denied in the middle of a stack deletion.
-            # No access to the content: events are for the agent's role, not for deployments.
+            # No access to the content: events are for the Memory gateway's role, not for deployments.
             Effect: Allow
             Action: [bedrock-agentcore:GetMemory, bedrock-agentcore:UpdateMemory, bedrock-agentcore:DeleteMemory,
                      bedrock-agentcore:TagResource, bedrock-agentcore:UntagResource,
@@ -212,7 +213,8 @@ Resources:
             Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/team-assistant/*
             Condition:
               StringEquals:
-                iam:PassedToService: bedrock-agentcore.amazonaws.com
+                # lambda: the role of the token claims function.
+                iam:PassedToService: [bedrock-agentcore.amazonaws.com, lambda.amazonaws.com]
           - Sid: DenyRolesWithoutBoundary
             Effect: Deny
             Action: [iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy, iam:PutRolePermissionsBoundary]
@@ -388,6 +390,72 @@ Resources:
             Action: [bedrock:GetGuardrail, bedrock:ListTagsForResource]
             Resource: !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:guardrail/*
 
+  ExecutionMemoryGatewayPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: TeamAssistantCdkExecutionMemoryGateway
+      Description: CloudFormation execution policy (Memory gateway's access rules, token claims function) of the team-assistant CDK bootstrap
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PolicyEngineCreate
+            # CreatePolicyEngine has no resource to name; the request must carry this project's
+            # tag.
+            Effect: Allow
+            Action: bedrock-agentcore:CreatePolicyEngine
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: PolicyEngineTagOnCreate
+            # The tags sent with the create, authorized before the id exists.
+            Effect: Allow
+            Action: bedrock-agentcore:TagResource
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:policy-engine/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/project: team-assistant
+          - Sid: PolicyEngine
+            # Only this project's policy engines and their policies, by name (an engine id is
+            # <name>-<10 characters>).
+            Effect: Allow
+            Action: [bedrock-agentcore:GetPolicyEngine, bedrock-agentcore:UpdatePolicyEngine,
+                     bedrock-agentcore:DeletePolicyEngine,
+                     bedrock-agentcore:CreatePolicy, bedrock-agentcore:GetPolicy,
+                     bedrock-agentcore:UpdatePolicy, bedrock-agentcore:DeletePolicy,
+                     bedrock-agentcore:TagResource, bedrock-agentcore:UntagResource,
+                     bedrock-agentcore:ListTagsForResource]
+            Resource:
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:policy-engine/team_assistant_*
+              - !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:policy-engine/team_assistant_*/policy/*
+          - Sid: PolicyForGateway
+            # Authorized on the gateway whose requests the policy governs.
+            # ManageResourceScopedPolicy: listed by the policy's CloudFormation handlers.
+            # InvokeGateway, ListGatewayTargets: a policy is checked against the operations of
+            # the gateway's targets when it is created or updated (AgentCore devguide,
+            # policy-permissions).
+            Effect: Allow
+            Action: [bedrock-agentcore:ManageResourceScopedPolicy, bedrock-agentcore:InvokeGateway,
+                     bedrock-agentcore:ListGatewayTargets]
+            Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:*:${AWS::AccountId}:gateway/team-assistant-*-memory-*
+          - Sid: PolicyAdmin
+            # Listed by the policy's CloudFormation handlers; the action supports no resource
+            # type.
+            Effect: Allow
+            Action: bedrock-agentcore:ManageAdminPolicy
+            Resource: "*"
+          - Sid: TokenClaimsFunction
+            # Only this project's function, by name; AddPermission lets the user pool call it.
+            Effect: Allow
+            Action: [lambda:CreateFunction, lambda:GetFunction, lambda:DeleteFunction,
+                     lambda:UpdateFunctionCode, lambda:UpdateFunctionConfiguration,
+                     lambda:GetFunctionCodeSigningConfig, lambda:GetRuntimeManagementConfig,
+                     lambda:GetFunctionRecursionConfig, lambda:GetFunctionScalingConfig,
+                     lambda:ListTags,
+                     lambda:AddPermission, lambda:RemovePermission, lambda:GetPolicy,
+                     lambda:TagResource, lambda:UntagResource]
+            Resource: !Sub arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:function:team-assistant-*-token-claims
+
 Outputs:
   ExecutionPolicyArn:
     Value: !Ref ExecutionPolicy
@@ -399,3 +467,5 @@ Outputs:
     Value: !Ref ExecutionWebPolicy
   ExecutionGuardrailPolicyArn:
     Value: !Ref ExecutionGuardrailPolicy
+  ExecutionMemoryGatewayPolicyArn:
+    Value: !Ref ExecutionMemoryGatewayPolicy

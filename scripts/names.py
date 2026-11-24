@@ -16,7 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "infra"))
 
 from team_assistant_infra import naming  # noqa: E402
 
-from team_assistant.config import GITHUB_RETURN_URL, WEB_LOCAL_RETURN_URL  # noqa: E402
+from team_assistant.config import (  # noqa: E402
+    GITHUB_RETURN_URL,
+    MEMORY_TARGET,
+    WEB_LOCAL_RETURN_URL,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         "GITHUB_RETURN_URL": GITHUB_RETURN_URL,
         "WEB_LOCAL_RETURN_URL": WEB_LOCAL_RETURN_URL,
         "GATEWAY_TARGET": naming.GATEWAY_TARGET,
+        "MEMORY_TARGET": MEMORY_TARGET,
         "QUALIFIER": naming.CDK_QUALIFIER,
         "TOOLKIT_STACK": naming.TOOLKIT_STACK,
         "POLICIES_STACK": naming.POLICIES_STACK,
